@@ -9954,6 +9954,7 @@ function openDrawer(btn) {
           controlDevice,
           eventDevice,
           eventMode,
+          transportMode: String(plan?.transportMode || "official").trim().toLowerCase(),
           debugLabel: String(plan?.debugLabel || ""),
           controlSummary,
           eventSummary,
@@ -10187,6 +10188,7 @@ function openDrawer(btn) {
               eventDevice,
               reason: "connect",
               initialReadMode: "full",
+              transportMode: resolvedPlan.transportMode,
               readTimeoutMs: bootstrapReadTimeoutMs,
               readRetry: bootstrapReadRetry,
               // Whether connect flow allows protocol layer to use old-cache fallback.

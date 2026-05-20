@@ -87,10 +87,13 @@
   const RAZER_MAX_DPI_STAGES = 5;
   // Unified retry policy: all commands get the same BUSY retry budget.
   const RAZER_BUSY_RETRY = 10;
+  const RAZER_LEGACY_BUSY_RETRY = 32;
   // Small backoff reduces transient misalignment loops on some hosts/dongles.
   const RAZER_RETRY_BACKOFF_MS = 16;
   // When only one report-id is available, allow short retry for transient NotAllowedError.
   const RAZER_NOT_ALLOWED_SAME_ID_RETRY = 0;
+  const RAZER_LEGACY_NOT_ALLOWED_SAME_ID_RETRY = 2;
+  const RAZER_LEGACY_COMMAND_WAIT_MS = 60;
   // Some wireless paths need a short settle window right after open().
   const RAZER_POST_OPEN_SETTLE_MS = 60;
   // OBM button I/O is noticeably more timing-sensitive than the rest of the
@@ -100,6 +103,17 @@
   const RAZER_OBM_BUTTON_IO_RETRY_DELAY_MS = 24;
   // Official Synapse WebHID mouse control path uses Consumer usage page.
   const RAZER_WEBHID_CONTROL_USAGE_PAGE = 0x0c;
+  const RAZER_TRANSPORT_MODE = Object.freeze({
+    OFFICIAL: "official",
+    LEGACY_V3: "legacy-v3",
+  });
+
+  function normalizeRazerTransportMode(mode) {
+    const normalized = String(mode || "").trim().toLowerCase();
+    return normalized === RAZER_TRANSPORT_MODE.LEGACY_V3
+      ? RAZER_TRANSPORT_MODE.LEGACY_V3
+      : RAZER_TRANSPORT_MODE.OFFICIAL;
+  }
 
   const PID = Object.freeze({
     HYPERPOLLING_WIRELESS_DONGLE: 0x00b3,
@@ -114,6 +128,15 @@
     VIPER_V4_PRO_WIRED: 0x00e5,
     VIPER_V4_PRO_WIRELESS: 0x00e6,
   });
+
+  function isViperV3Pid(pid) {
+    const normalized = Number(pid);
+    return normalized === PID.VIPER_V3_PRO_WIRED || normalized === PID.VIPER_V3_PRO_WIRELESS;
+  }
+
+  function isLegacyV3TransportForPid(mode, pid) {
+    return normalizeRazerTransportMode(mode) === RAZER_TRANSPORT_MODE.LEGACY_V3 && isViperV3Pid(pid);
+  }
 
   const TRANSPORT_ROLE = Object.freeze({
     SINGLE: "single",
@@ -429,9 +452,8 @@
     REFRESH_FULL: "refresh_full",
   });
 
-  function getWaitMsForPid(pid) {
-    void pid;
-    return 0;
+  function getWaitMsForPid(pid, transportMode = RAZER_TRANSPORT_MODE.OFFICIAL) {
+    return isLegacyV3TransportForPid(transportMode, pid) ? RAZER_LEGACY_COMMAND_WAIT_MS : 0;
   }
 
   function isPermissionPathError(err) {
@@ -550,13 +572,27 @@
       this.readTimeoutMs = 1500;
       this._featureReportIds = [0];
       this._transactionId = 0;
+      this._transportMode = RAZER_TRANSPORT_MODE.OFFICIAL;
     }
 
-    setDevice(device, productId = 0) {
+    setDevice(device, productId = 0, opts = {}) {
       this.device = device || null;
       this.productId = Number(productId || 0);
+      if (Object.prototype.hasOwnProperty.call(opts || {}, "transportMode")) {
+        this._transportMode = normalizeRazerTransportMode(opts.transportMode);
+      }
       this._featureReportIds = this._collectFeatureReportIds();
       this._transactionId = 0;
+    }
+
+    setTransportMode(mode) {
+      this._transportMode = normalizeRazerTransportMode(mode);
+      this._featureReportIds = this._collectFeatureReportIds();
+      this._transactionId = 0;
+    }
+
+    _usesLegacyV3Transport() {
+      return isLegacyV3TransportForPid(this._transportMode, this.productId);
     }
 
     _requireOpenDevice() {
@@ -565,6 +601,9 @@
     }
 
     _collectFeatureReportIds() {
+      if (this._usesLegacyV3Transport()) {
+        return [getFeatureReportIdForPid(this.productId)];
+      }
       // Official Synapse WebHID mouse path uses reportId 0 for feature I/O.
       // The model-level feature/event report ids remain available as semantic metadata.
       return [getWebHidFeatureReportIdForPid(this.productId)];
@@ -582,6 +621,7 @@
       const raw = packet instanceof Uint8Array
         ? ProtocolCodec.fitReport(packet)
         : ProtocolCodec.encodeRazerReport(packet || {});
+      if (this._usesLegacyV3Transport()) return new Uint8Array(raw);
       const currentTx = clampU8(raw[1] ?? 0);
       if (currentTx === 0xff) return new Uint8Array(raw);
       return ProtocolCodec.withTransactionId(raw, this._nextTransactionId());
@@ -618,8 +658,8 @@
     }
 
     /**
-     * Send one official Razer command frame and wait for a matching response.
-     * Matching rule follows Synapse Web: transactionId + commandClass + commandId.
+     * Send one Razer command frame and wait for a matching response.
+     * Official mode follows Synapse Web; legacy V3 keeps the older OpenRazer-style framing.
      */
     async sendAndWait(packet, opts = {}) {
       return this.queue.enqueue(async () => {
@@ -628,10 +668,17 @@
         const requestBytes = this._prepareRequestBytes(packet);
         const request = ProtocolCodec.parseRazerReport(requestBytes);
 
-        const reportId = Number(this._featureReportIds[0] ?? getWebHidFeatureReportIdForPid(this.productId));
+        const usesLegacyV3 = this._usesLegacyV3Transport();
+        const reportId = Number(this._featureReportIds[0] ?? (
+          usesLegacyV3
+            ? getFeatureReportIdForPid(this.productId)
+            : getWebHidFeatureReportIdForPid(this.productId)
+        ));
 
-        const retryBudget = RAZER_BUSY_RETRY;
-        const waitMs = Number.isFinite(Number(opts.waitMs)) ? Number(opts.waitMs) : getWaitMsForPid(this.productId);
+        const retryBudget = usesLegacyV3 ? RAZER_LEGACY_BUSY_RETRY : RAZER_BUSY_RETRY;
+        const waitMs = Number.isFinite(Number(opts.waitMs))
+          ? Number(opts.waitMs)
+          : getWaitMsForPid(this.productId, this._transportMode);
         const responseValidator = typeof opts.responseValidator === "function"
           ? opts.responseValidator
           : null;
@@ -647,16 +694,21 @@
             const responseBytes = ProtocolCodec.fitReport(raw);
             const response = ProtocolCodec.parseRazerReport(responseBytes);
 
-            if (!ProtocolCodec.matchResponse(request, response)) {
+            const responseMatches = usesLegacyV3
+              ? ProtocolCodec.matchLegacyResponse(request, response)
+              : ProtocolCodec.matchResponse(request, response);
+            if (!responseMatches) {
               throw new ProtocolError("Response does not match request", "RESPONSE_MISMATCH", {
                 reportId,
                 expected: {
                   transactionId: request.transactionId,
+                  remainingPackets: request.remainingPackets,
                   commandClass: request.commandClass,
                   commandId: request.commandId,
                 },
                 got: {
                   transactionId: response.transactionId,
+                  remainingPackets: response.remainingPackets,
                   commandClass: response.commandClass,
                   commandId: response.commandId,
                 },
@@ -724,7 +776,10 @@
             const isPermissionPathErr = isPermissionPathError(err);
 
             if (isPermissionPathErr) {
-              const permissionRetryBudget = Math.min(retryBudget, RAZER_NOT_ALLOWED_SAME_ID_RETRY);
+              const sameIdRetry = usesLegacyV3
+                ? RAZER_LEGACY_NOT_ALLOWED_SAME_ID_RETRY
+                : RAZER_NOT_ALLOWED_SAME_ID_RETRY;
+              const permissionRetryBudget = Math.min(retryBudget, sameIdRetry);
               if (attempt >= permissionRetryBudget) throw err;
             }
 
@@ -871,6 +926,16 @@
       );
     },
 
+    matchLegacyResponse(request, response) {
+      const req = request?.raw ? request : ProtocolCodec.parseRazerReport(request);
+      const res = response?.raw ? response : ProtocolCodec.parseRazerReport(response);
+      return (
+        req.remainingPackets === res.remainingPackets &&
+        req.commandClass === res.commandClass &&
+        req.commandId === res.commandId
+      );
+    },
+
     commands: {
       getSerial(tx) {
         return ProtocolCodec.encodeRazerReport({ transactionId: tx, commandClass: 0x00, commandId: 0x82, dataSize: 0x16 });
@@ -902,6 +967,10 @@
           dataSize: 0x02,
           arguments: [clampU8(profileId), 0x00],
         });
+      },
+
+      getPollingRate2Legacy(tx) {
+        return ProtocolCodec.encodeRazerReport({ transactionId: tx, commandClass: 0x00, commandId: 0xc0, dataSize: 0x01 });
       },
 
       setPollingRate2(tx, argument0, pollingCode) {
@@ -994,6 +1063,16 @@
         });
       },
 
+      getDpiStagesLegacy(tx, variableStorage = RAZER_CONST.VARSTORE) {
+        return ProtocolCodec.encodeRazerReport({
+          transactionId: tx,
+          commandClass: 0x04,
+          commandId: 0x86,
+          dataSize: 0x26,
+          arguments: [clampU8(variableStorage)],
+        });
+      },
+
       getSingleButtonAssignment(
         tx,
         profileId = OFFICIAL_MOUSE_PROFILE_ID,
@@ -1032,6 +1111,56 @@
           commandId: 0x0c,
           dataSize: OFFICIAL_OBM_SINGLE_BUTTON_ASSIGNMENT_DATA_SIZE,
           arguments: out,
+        });
+      },
+
+      getButtonMappingRep4(tx, sourceCode) {
+        const src = clampU16(sourceCode);
+        return ProtocolCodec.encodeRazerReport({
+          transactionId: tx,
+          commandClass: 0x02,
+          commandId: 0x8c,
+          dataSize: 0x0a,
+          arguments: [
+            0x01,
+            src & 0xff,
+            (src >> 8) & 0xff,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+          ],
+        });
+      },
+
+      setButtonMappingRep4(tx, sourceCode, actionQuad) {
+        const src = clampU16(sourceCode);
+        const action = Array.isArray(actionQuad) ? actionQuad.slice(0, 4) : [];
+        if (action.length !== 4) {
+          throw new ProtocolError("REP4 actionQuad must be [act0,act1,act2,act3]", "BAD_PARAM", {
+            actionQuad,
+          });
+        }
+        return ProtocolCodec.encodeRazerReport({
+          transactionId: tx,
+          commandClass: 0x02,
+          commandId: 0x0c,
+          dataSize: 0x0a,
+          arguments: [
+            0x01,
+            src & 0xff,
+            (src >> 8) & 0xff,
+            clampU8(action[0]),
+            clampU8(action[1]),
+            clampU8(action[2]),
+            clampU8(action[3]),
+            0x00,
+            0x00,
+            0x00,
+          ],
         });
       },
 
@@ -2454,6 +2583,164 @@
     return buildUnknownOfficialObmEntry(fnId, dataArray, dataSize);
   }
 
+  const LEGACY_REP4_SOURCE_CODE_BY_BUTTON_ID = Object.freeze({
+    1: 0x0001,
+    2: 0x0002,
+    3: 0x0003,
+    4: 0x0005,
+    5: 0x0004,
+    6: 0x0060,
+  });
+
+  const LEGACY_REP4_MOUSE_QUADLET_BY_PUBLIC_ACTION = Object.freeze({
+    "1:0": [0x01, 0x01, 0x01, 0x00],
+    "2:0": [0x01, 0x01, 0x02, 0x00],
+    "4:0": [0x01, 0x01, 0x03, 0x00],
+    "8:0": [0x01, 0x01, 0x05, 0x00],
+    "16:0": [0x01, 0x01, 0x04, 0x00],
+    "1:6": [0x0b, 0x01, 0x01, 0x00],
+    "1:9": [0x01, 0x01, 0x09, 0x00],
+    "1:10": [0x01, 0x01, 0x0a, 0x00],
+    "7:0": [0x01, 0x01, 0x00, 0x00],
+    "32:5": [0x06, 0x01, 0x06, 0x00],
+  });
+
+  const LEGACY_REP4_READ_MAX_ATTEMPTS = 7;
+  const LEGACY_REP4_READ_STABLE_HITS_REQUIRED = 2;
+  const LEGACY_REP4_READ_RETRY_DELAY_MS = 20;
+  const LEGACY_REP4_UNKNOWN_SOURCE = "Unknown(REP4)";
+  const LEGACY_REP4_RETRYABLE_READ_CODES = new Set([
+    "REP4_READ_EMPTY",
+    "REP4_READ_INVALID",
+    "REP4_SOURCE_ECHO_MISMATCH",
+    "REP4_READ_UNKNOWN_ACTION",
+    "REP4_READ_UNSTABLE",
+    "IO_READ_TIMEOUT",
+    "DEVICE_COMMAND_NEW_COMMAND",
+    "DEVICE_BUSY",
+    "DEVICE_COMMAND_FAILURE",
+    "DEVICE_COMMAND_TIMEOUT",
+    "RESPONSE_MISMATCH",
+    "RESPONSE_VALIDATION_FAILED",
+  ]);
+
+  function quadletKey(a0, a1, a2, a3) {
+    return `${clampU8(a0)}:${clampU8(a1)}:${clampU8(a2)}:${clampU8(a3)}`;
+  }
+
+  const LEGACY_REP4_PUBLIC_ACTION_BY_QUADLET = (() => {
+    const out = new Map();
+    for (const [actionKey, quadlet] of Object.entries(LEGACY_REP4_MOUSE_QUADLET_BY_PUBLIC_ACTION)) {
+      const [funckey, keycode] = actionKey.split(":").map((v) => Number(v));
+      out.set(quadletKey(quadlet[0], quadlet[1], quadlet[2], quadlet[3]), {
+        funckey,
+        keycode,
+      });
+    }
+    return out;
+  })();
+
+  function buildUnknownRep4Entry(sourceText = LEGACY_REP4_UNKNOWN_SOURCE) {
+    return {
+      source: String(sourceText || LEGACY_REP4_UNKNOWN_SOURCE),
+      funckey: 0x00,
+      keycode: 0x0000,
+    };
+  }
+
+  function buildLegacyRep4QuadletFromPublicAction(actionLike) {
+    const action = normalizeButtonMappingEntry(actionLike);
+    const actionKey = `${action.funckey}:${action.keycode}`;
+
+    if (Object.prototype.hasOwnProperty.call(LEGACY_REP4_MOUSE_QUADLET_BY_PUBLIC_ACTION, actionKey)) {
+      return LEGACY_REP4_MOUSE_QUADLET_BY_PUBLIC_ACTION[actionKey].slice(0, 4).map((v) => clampU8(v));
+    }
+
+    if (action.funckey === 0x02) {
+      const packed = clampInt(action.keycode, 0, 0xffff);
+      return [0x02, 0x02, (packed >> 8) & 0xff, packed & 0xff];
+    }
+
+    if (Object.prototype.hasOwnProperty.call(OFFICIAL_OBM_MEDIA_USAGE_BY_PUBLIC_ACTION, actionKey)) {
+      const usage = clampU16(OFFICIAL_OBM_MEDIA_USAGE_BY_PUBLIC_ACTION[actionKey]);
+      return [0x0a, 0x02, (usage >> 8) & 0xff, usage & 0xff];
+    }
+
+    return null;
+  }
+
+  function buildPublicActionFromLegacyRep4Quadlet(quadlet) {
+    if (!Array.isArray(quadlet) || quadlet.length < 4) return buildUnknownRep4Entry();
+
+    const a0 = clampU8(quadlet[0]);
+    const a1 = clampU8(quadlet[1]);
+    const a2 = clampU8(quadlet[2]);
+    const a3 = clampU8(quadlet[3]);
+
+    if (a0 === 0x02 && a1 === 0x02) {
+      const keycode = ((a2 << 8) | a3) & 0xffff;
+      const source = FUNCKEY_KEYCODE_TO_LABEL.get(`2:${keycode}`);
+      if (source) return normalizeButtonMappingEntry({ source, funckey: 0x02, keycode });
+      return buildUnknownRep4Entry(`Unknown(REP4:${hexU8(a0)}-${hexU8(a1)}-${hexU8(a2)}-${hexU8(a3)})`);
+    }
+
+    if (a0 === 0x0a && a1 === 0x02) {
+      const usage = ((a2 << 8) | a3) & 0xffff;
+      const action = OFFICIAL_PUBLIC_ACTION_BY_MEDIA_USAGE.get(usage);
+      if (action) {
+        const source = FUNCKEY_KEYCODE_TO_LABEL.get(`${action.funckey}:${action.keycode}`);
+        if (source) return normalizeButtonMappingEntry({ source, funckey: action.funckey, keycode: action.keycode });
+      }
+      return buildUnknownRep4Entry(`Unknown(REP4:${hexU8(a0)}-${hexU8(a1)}-${hexU8(a2)}-${hexU8(a3)})`);
+    }
+
+    const action = LEGACY_REP4_PUBLIC_ACTION_BY_QUADLET.get(quadletKey(a0, a1, a2, a3));
+    if (action) {
+      const source = FUNCKEY_KEYCODE_TO_LABEL.get(`${action.funckey}:${action.keycode}`);
+      if (source) return normalizeButtonMappingEntry({ source, funckey: action.funckey, keycode: action.keycode });
+    }
+
+    return buildUnknownRep4Entry(`Unknown(REP4:${hexU8(a0)}-${hexU8(a1)}-${hexU8(a2)}-${hexU8(a3)})`);
+  }
+
+  function extractLegacyRep4ReadQuadlet(btnId, sourceCode, response) {
+    const expectedSourceCode = clampU16(sourceCode);
+    const slot = clampInt(btnId, 1, 6);
+    const args = response?.arguments;
+    if (!(args instanceof Uint8Array) || args.length < 7) {
+      throw new ProtocolError("REP4 mapping response is invalid", "REP4_READ_INVALID", {
+        btnId: slot,
+        expectedSourceCode,
+        argsLength: args instanceof Uint8Array ? args.length : -1,
+      });
+    }
+    if (clampU8(args[0]) !== 0x01) {
+      throw new ProtocolError("REP4 mapping response header is invalid", "REP4_READ_INVALID", {
+        btnId: slot,
+        expectedSourceCode,
+        header: clampU8(args[0]),
+      });
+    }
+    const sourceEcho = ((clampU8(args[2]) << 8) | clampU8(args[1])) & 0xffff;
+    if (sourceEcho !== expectedSourceCode) {
+      throw new ProtocolError("REP4 source echo mismatch", "REP4_SOURCE_ECHO_MISMATCH", {
+        btnId: slot,
+        expectedSourceCode,
+        sourceEcho,
+      });
+    }
+    return [clampU8(args[3]), clampU8(args[4]), clampU8(args[5]), clampU8(args[6])];
+  }
+
+  function isKnownLegacyRep4Quadlet(quadlet) {
+    const action = buildPublicActionFromLegacyRep4Quadlet(quadlet);
+    return !String(action?.source || "").startsWith("Unknown(REP4");
+  }
+
+  function isRetryableLegacyRep4ReadError(err) {
+    return LEGACY_REP4_RETRYABLE_READ_CODES.has(String(err?.code || ""));
+  }
+
   function resolveButtonMappingActionInput(btnId, labelOrObj) {
     const slot = clampInt(btnId, 1, 6);
 
@@ -2549,6 +2836,7 @@
       this._attachedInputDevice = null;
       this._transportPid = 0;
       this._sessionPid = 0;
+      this._transportMode = RAZER_TRANSPORT_MODE.OFFICIAL;
       this._driver = new UniversalHidDriver();
       this._planner = new CommandPlanner(0);
       this._opQueue = new SendQueue();
@@ -2600,6 +2888,19 @@
       return this._sessionReadCache;
     }
 
+    _setTransportMode(mode) {
+      const requested = normalizeRazerTransportMode(mode);
+      this._transportMode = isLegacyV3TransportForPid(requested, this._pid())
+        ? RAZER_TRANSPORT_MODE.LEGACY_V3
+        : RAZER_TRANSPORT_MODE.OFFICIAL;
+      this._driver.setTransportMode(this._transportMode);
+      return this._transportMode;
+    }
+
+    _usesLegacyV3Transport() {
+      return isLegacyV3TransportForPid(this._transportMode, this._pid());
+    }
+
     _resolveSnapshotReadMode(mode = "full", reason = "") {
       const normalizedMode = String(mode || "full").trim().toLowerCase();
       if (normalizedMode === "none") return "none";
@@ -2634,8 +2935,11 @@
       this._eventDevice = eventDevice || null;
       this._transportPid = this._resolveTransportPid(this._device);
       this._sessionPid = this._resolveSessionPid(this._device);
+      this._transportMode = isLegacyV3TransportForPid(this._transportMode, this._sessionPid)
+        ? RAZER_TRANSPORT_MODE.LEGACY_V3
+        : RAZER_TRANSPORT_MODE.OFFICIAL;
       this._planner.setProductId(this._sessionPid);
-      this._driver.setDevice(this._device, this._transportPid);
+      this._driver.setDevice(this._device, this._transportPid, { transportMode: this._transportMode });
       this._resetSessionReadCache();
       this._cfg = this._makeDefaultCfg();
       this._syncCapabilitiesSnapshot();
@@ -2880,7 +3184,7 @@
         }
 
         this._closed = false;
-        this._driver.setDevice(controlDevice, transportPid);
+        this._driver.setDevice(controlDevice, transportPid, { transportMode: this._transportMode });
         this._planner.setProductId(pid);
         this._cfg = Object.assign({}, this._makeDefaultCfg(), isObject(this._cfg) ? this._cfg : {});
         this._detachInputReportListener();
@@ -2919,6 +3223,7 @@
       const hasReadRetry = Object.prototype.hasOwnProperty.call(options, "readRetry");
       const hasOpenRetryDelayMs = Object.prototype.hasOwnProperty.call(options, "openRetryDelayMs");
       const hasReadRetryDelayMs = Object.prototype.hasOwnProperty.call(options, "readRetryDelayMs");
+      const hasTransportMode = Object.prototype.hasOwnProperty.call(options, "transportMode");
       const normalizedReason = String(options.reason || "").trim().toLowerCase();
       const {
         reason = "",
@@ -2937,6 +3242,7 @@
         const nextEventDevice = hasEventDevice ? (options.eventDevice || null) : (hasDevice ? null : this.eventDevice);
         this._setSessionDevices(nextControlDevice, nextEventDevice);
       }
+      this._setTransportMode(hasTransportMode ? options.transportMode : RAZER_TRANSPORT_MODE.OFFICIAL);
 
       const cachedCfg = this.getCachedConfig();
       const requestedOpenRetry = hasOpenRetry ? options.openRetry : openRetry;
@@ -3035,6 +3341,7 @@
           openAttempts,
           readAttempts,
           usedCacheFallback,
+          transportMode: this._transportMode,
           initialReadMode: normalizedInitialReadMode,
           readTimeoutMs: driverReadTimeoutMs,
           sendTimeoutMs: driverSendTimeoutMs,
@@ -3259,7 +3566,71 @@
       return this.setActiveDpiSlotIndex(index);
     }
 
+    async _setLegacyRep4ButtonMappingBySelect(btnId, labelOrObj) {
+      return this._opQueue.enqueue(async () => {
+        await this._ensureOpen();
+        const slot = clampInt(btnId, 1, 6);
+        const sourceCode = LEGACY_REP4_SOURCE_CODE_BY_BUTTON_ID[slot];
+        if (!Number.isFinite(sourceCode)) {
+          throw new ProtocolError(`Unsupported Razer REP4 button slot: ${btnId}`, "BAD_PARAM", { btnId: slot });
+        }
+
+        const resolved = resolveButtonMappingActionInput(slot, labelOrObj);
+        if (!resolved?.action) {
+          throw new ProtocolError(`Unknown or unsupported button action: ${String(labelOrObj ?? "")}`, "BAD_PARAM", {
+            btnId: slot,
+            value: labelOrObj,
+          });
+        }
+
+        const rep4Action = buildLegacyRep4QuadletFromPublicAction(resolved.action);
+        if (!Array.isArray(rep4Action) || rep4Action.length !== 4) {
+          throw new ProtocolError(`Button action is not writable via legacy Razer REP4 path: ${String(resolved.label || resolved.source || "")}`, "FEATURE_UNAVAILABLE", {
+            btnId: slot,
+            label: resolved.label || resolved.source || "",
+          });
+        }
+
+        const tx = txForField(this._pid(), "buttonMappings");
+        await this._driver.runSequence([{
+          packet: ProtocolCodec.commands.setButtonMappingRep4(tx, sourceCode, rep4Action),
+        }]);
+
+        let verified = null;
+        try {
+          verified = await this._readSingleLegacyRep4ButtonMapping(slot, { strictStability: true });
+        } catch (err) {
+          throw new ProtocolError("Button mapping verify readback failed", "VERIFY_FAILED", {
+            btnId: slot,
+            expected: normalizeButtonMappingEntry(resolved.action, resolved.source || resolved.label || ""),
+            cause: err,
+          });
+        }
+        if (!isSameButtonAction(verified, resolved.action)) {
+          throw new ProtocolError("Button mapping verify mismatch", "VERIFY_FAILED", {
+            btnId: slot,
+            expected: normalizeButtonMappingEntry(resolved.action, resolved.source || resolved.label || ""),
+            actual: verified,
+          });
+        }
+
+        const defaultMappings = buildDefaultRazerButtonMappings();
+        const nextMappings = Array.isArray(this._cfg?.buttonMappings)
+          ? this._cfg.buttonMappings.slice(0, 6)
+          : defaultMappings.slice(0, 6);
+        while (nextMappings.length < 6) {
+          nextMappings.push(defaultMappings[nextMappings.length] || normalizeButtonMappingEntry());
+        }
+        nextMappings[slot - 1] = verified;
+        this._cfg = Object.assign({}, this._cfg, { buttonMappings: nextMappings });
+        this._emitConfig();
+      });
+    }
+
     async setButtonMappingBySelect(btnId, labelOrObj) {
+      if (this._usesLegacyV3Transport()) {
+        return this._setLegacyRep4ButtonMappingBySelect(btnId, labelOrObj);
+      }
       return this._opQueue.enqueue(async () => {
         await this._ensureOpen();
         const slot = clampInt(btnId, 1, 6);
@@ -3329,10 +3700,131 @@
       });
     }
 
+    async _readSingleLegacyRep4ButtonMapping(btnId, { strictStability = false } = {}) {
+      const slot = clampInt(btnId, 1, 6);
+      const sourceCode = LEGACY_REP4_SOURCE_CODE_BY_BUTTON_ID[slot];
+      if (!Number.isFinite(sourceCode)) {
+        throw new ProtocolError(`Unsupported Razer REP4 button slot: ${btnId}`, "BAD_PARAM", { btnId: slot });
+      }
+
+      const tx = txForField(this._pid(), "buttonMappings");
+      const cachedMapping = normalizeButtonMappingEntry(this._cfg?.buttonMappings?.[slot - 1]);
+      let resolved = null;
+      let lastErr = null;
+      let lastQuadSig = "";
+      let stableHits = 0;
+
+      for (let attempt = 1; attempt <= LEGACY_REP4_READ_MAX_ATTEMPTS; attempt++) {
+        try {
+          const readRes = await this._safeQuery(
+            ProtocolCodec.commands.getButtonMappingRep4(tx, sourceCode),
+            null,
+            {
+              responseValidator: (_request, response) => {
+                const args = response?.arguments;
+                if (!(args instanceof Uint8Array) || args.length < 3) return false;
+                const sourceEcho = ((clampU8(args[2]) << 8) | clampU8(args[1])) & 0xffff;
+                return sourceEcho === clampU16(sourceCode);
+              },
+            }
+          );
+          if (!readRes?.arguments) {
+            throw new ProtocolError("REP4 mapping response is empty", "REP4_READ_EMPTY", {
+              btnId: slot,
+              sourceCode: clampU16(sourceCode),
+              attempt,
+            });
+          }
+
+          const quadlet = extractLegacyRep4ReadQuadlet(slot, sourceCode, readRes);
+          const sig = quadletKey(quadlet[0], quadlet[1], quadlet[2], quadlet[3]);
+          stableHits = sig === lastQuadSig ? stableHits + 1 : 1;
+          lastQuadSig = sig;
+
+          if (!isKnownLegacyRep4Quadlet(quadlet)) {
+            throw new ProtocolError("REP4 mapping quadlet is unknown", "REP4_READ_UNKNOWN_ACTION", {
+              btnId: slot,
+              sourceCode: clampU16(sourceCode),
+              attempt,
+              quadlet: quadlet.slice(0, 4),
+            });
+          }
+
+          const candidate = buildPublicActionFromLegacyRep4Quadlet(quadlet);
+          const needStrictStability = !!strictStability || !isSameButtonAction(candidate, cachedMapping);
+          const requiredHits = needStrictStability ? LEGACY_REP4_READ_STABLE_HITS_REQUIRED : 1;
+          if (stableHits < requiredHits) {
+            throw new ProtocolError("REP4 mapping read is unstable", "REP4_READ_UNSTABLE", {
+              btnId: slot,
+              sourceCode: clampU16(sourceCode),
+              attempt,
+              stableHits,
+              required: requiredHits,
+            });
+          }
+
+          resolved = candidate;
+          break;
+        } catch (err) {
+          lastErr = err;
+          const canRetry = isRetryableLegacyRep4ReadError(err) && attempt < LEGACY_REP4_READ_MAX_ATTEMPTS;
+          if (!canRetry) break;
+          if (LEGACY_REP4_READ_RETRY_DELAY_MS > 0) await sleep(LEGACY_REP4_READ_RETRY_DELAY_MS);
+        }
+      }
+
+      if (resolved) return resolved;
+      throw lastErr || new ProtocolError("REP4 button mapping read failed", "OBM_READ_FAILED", {
+        btnId: slot,
+        sourceCode,
+      });
+    }
+
+    async _readLegacyRep4ButtonMappingsSnapshot({ strictStability = false, skipDeviceRead = false } = {}) {
+      this._ensureSupported();
+      const cached = Array.isArray(this._cfg?.buttonMappings) && this._cfg.buttonMappings.length
+        ? this._cfg.buttonMappings
+        : buildDefaultRazerButtonMappings();
+
+      if (skipDeviceRead) {
+        return Array.from({ length: 6 }, (_unused, index) => normalizeButtonMappingEntry(
+          cached[index],
+          DEFAULT_RAZER_BUTTON_SOURCE_BY_BUTTON[index + 1]
+        ));
+      }
+
+      const out = [];
+      for (let slot = 1; slot <= 6; slot++) {
+        const fallback = normalizeButtonMappingEntry(
+          cached[slot - 1],
+          DEFAULT_RAZER_BUTTON_SOURCE_BY_BUTTON[slot]
+        );
+        try {
+          out.push(await this._readSingleLegacyRep4ButtonMapping(slot, { strictStability }));
+        } catch (err) {
+          console.warn("[Razer] REP4 button read failed", { slot, err });
+          out.push(fallback);
+        }
+      }
+      return out;
+    }
+
     async _safeQuery(packet, fallback = null, opts = {}) {
+      const legacySwallowCodes = [
+        "DEVICE_COMMAND_NOT_SUPPORTED",
+        "DEVICE_COMMAND_UNKNOWN_STATUS",
+        "DEVICE_COMMAND_NEW_COMMAND",
+        "DEVICE_BUSY",
+        "DEVICE_COMMAND_FAILURE",
+        "DEVICE_COMMAND_TIMEOUT",
+        "IO_READ_TIMEOUT",
+        "IO_WRITE_TIMEOUT",
+        "RESPONSE_MISMATCH",
+        "RESPONSE_VALIDATION_FAILED",
+      ];
       const {
         swallowPermissionPathError = true,
-        swallowCodes = ["DEVICE_COMMAND_NOT_SUPPORTED"],
+        swallowCodes = this._usesLegacyV3Transport() ? legacySwallowCodes : ["DEVICE_COMMAND_NOT_SUPPORTED"],
         ...sendOpts
       } = opts || {};
       const allowedCodes = new Set(
@@ -3393,8 +3885,11 @@
       });
     }
 
-    async _readButtonMappingsSnapshot() {
+    async _readButtonMappingsSnapshot(opts = {}) {
       this._ensureSupported();
+      if (this._usesLegacyV3Transport()) {
+        return this._readLegacyRep4ButtonMappingsSnapshot(opts);
+      }
       const cached = Array.isArray(this._cfg?.buttonMappings) && this._cfg.buttonMappings.length
         ? this._cfg.buttonMappings
         : buildDefaultRazerButtonMappings();
@@ -3479,6 +3974,8 @@
       const tx = txForField(pid, "snapshot");
       const snapshotMode = this._resolveSnapshotReadMode(mode);
       const isConnectFull = snapshotMode === SNAPSHOT_READ_MODE.CONNECT_FULL;
+      const isLegacyV3 = this._usesLegacyV3Transport();
+      const readOptionalAdvancedSnapshot = !(isLegacyV3 && isConnectFull);
       const updates = {
         deviceName: PID_NAME[pid] || (this.device?.productName ? String(this.device.productName) : "Razer Mouse"),
         capabilities: this._capabilitiesSnapshot(caps),
@@ -3499,7 +3996,11 @@
       }
 
       if (caps.pollingMode === "v2") {
-        const poll = await this._safeQuery(ProtocolCodec.commands.getPollingRate2(tx));
+        const poll = await this._safeQuery(
+          isLegacyV3
+            ? ProtocolCodec.commands.getPollingRate2Legacy(tx)
+            : ProtocolCodec.commands.getPollingRate2(tx)
+        );
         if (poll?.arguments) {
           updates.pollingHz = TRANSFORMERS.pollingV2Decode(poll.arguments[1]);
         }
@@ -3510,7 +4011,11 @@
         }
       }
 
-      const stages = await this._safeQuery(ProtocolCodec.commands.getDpiStages(tx, OFFICIAL_MOUSE_PROFILE_ID));
+      const stages = await this._safeQuery(
+        isLegacyV3
+          ? ProtocolCodec.commands.getDpiStagesLegacy(tx, RAZER_CONST.VARSTORE)
+          : ProtocolCodec.commands.getDpiStages(tx, OFFICIAL_MOUSE_PROFILE_ID)
+      );
       if (stages?.arguments) {
         const parsed = TRANSFORMERS.parseDpiStagesResponse(stages);
         if (parsed.dpiStages?.length) {
@@ -3529,7 +4034,9 @@
       }
 
       if (!isObject(updates.dpi)) {
-        const dpi = await this._safeQuery(ProtocolCodec.commands.getDpiXY(tx, OFFICIAL_MOUSE_PROFILE_ID));
+        const dpi = await this._safeQuery(
+          ProtocolCodec.commands.getDpiXY(tx, isLegacyV3 ? RAZER_CONST.NOSTORE : OFFICIAL_MOUSE_PROFILE_ID)
+        );
         if (dpi?.arguments) {
           updates.dpi = {
             x: ((dpi.arguments[1] << 8) | (dpi.arguments[2] & 0xff)) & 0xffff,
@@ -3543,7 +4050,7 @@
         Object.assign(updates, battery);
       }
 
-      if (caps.hyperpollingIndicatorMode) {
+      if (caps.hyperpollingIndicatorMode && readOptionalAdvancedSnapshot) {
         const txHyper = txForField(pid, "hyperpollingIndicatorMode");
         const hyper = await this._safeQuery(ProtocolCodec.commands.getHyperpollingIndicatorMode(txHyper));
         if (hyper?.arguments) {
@@ -3551,7 +4058,7 @@
         }
       }
 
-      if (caps.dynamicSensitivity) {
+      if (caps.dynamicSensitivity && readOptionalAdvancedSnapshot) {
         const txDyn = txForField(pid, "dynamicSensitivity");
         const dynEnabled = await this._safeQuery(ProtocolCodec.commands.getProximitySensorAccelerationState(txDyn));
         if (dynEnabled?.arguments) {
@@ -3563,7 +4070,7 @@
         }
       }
 
-      if (caps.sensorAngle) {
+      if (caps.sensorAngle && readOptionalAdvancedSnapshot) {
         const txAngle = txForField(pid, "sensorAngle");
         const angleRes = await this._safeQuery(ProtocolCodec.commands.getSensorAngle(txAngle));
         if (angleRes?.arguments) {
@@ -3573,7 +4080,7 @@
         }
       }
 
-      if (caps.smartTracking) {
+      if (caps.smartTracking && readOptionalAdvancedSnapshot) {
         const txTracking = txForField(pid, "smartTracking");
         const officialSmartTracking = Object.assign(
           {},
@@ -3615,12 +4122,14 @@
         Object.assign(updates, buildPublicSmartTrackingStateFromOfficialModel(officialSmartTracking));
       }
 
-      const buttonMappings = await this._readButtonMappingsSnapshot();
+      const buttonMappings = await this._readButtonMappingsSnapshot({
+        skipDeviceRead: isLegacyV3 && isConnectFull,
+      });
       if (Array.isArray(buttonMappings) && buttonMappings.length) {
         updates.buttonMappings = buttonMappings;
       }
 
-      // Button mapping snapshot now uses the official OBM path for every Razer PID.
+      // V4 uses official OBM; V3 legacy shares the public model via REP4 codec.
 
       return updates;
     }
