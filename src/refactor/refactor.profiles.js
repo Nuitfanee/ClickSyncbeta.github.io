@@ -544,8 +544,8 @@ id: "atk",
       keymap: {
         imageSrc: "./assets/images/CRDRAKO_KO_ONE.png",
         points: {
-          1: { x: 32, y: 18, side: "left" },
-          2: { x: 68, y: 18, side: "right" },
+          1: { x: 24, y: 10, side: "left" },
+          2: { x: 76, y: 18, side: "right" },
           3: { x: 50, y: 26, side: "left" },
           4: { x: 4, y: 39, side: "left" },
           5: { x: 4, y: 51, side: "left" },
