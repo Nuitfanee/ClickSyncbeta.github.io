@@ -2850,7 +2850,11 @@ async function enterAppWithLiquidTransition(origin = null) {
     // already surfaced a valid battery value via cfg/onBattery.
     if (__batteryPrimePendingForCurrentSession && __batteryKnownForCurrentSession) return;
     try {
-      await hidApi.requestBattery();
+      const bat = await hidApi.requestBattery();
+      if (normalizeBatteryPercentValue(bat?.batteryPercent) == null) {
+        if (reason) log(window.tr(`电量刷新未返回有效数据(${reason})`, `Battery refresh returned no valid value (${reason})`));
+        return;
+      }
       if (reason) log(window.tr(`已刷新电量(${reason})`, `Battery refreshed (${reason})`));
     } catch (e) {
 
@@ -10101,7 +10105,7 @@ function openDrawer(btn) {
           `collections=${Number(item.collectionCount ?? 0)}`,
           `usagePage=${formatSummaryHex(item.usagePage)}`,
           `expectedUsagePage=${formatSummaryHex(item.controlUsagePage)}`,
-          `featureReportId=${formatSummaryHex(item.webhidFeatureReportId)}`,
+          `reportId=${formatSummaryHex(item.webhidReportId)}`,
           `firstFeature=${Number(item.firstCollectionFeatureReportCount ?? 0)}`,
           `firstInput=${Number(item.firstCollectionInputReportCount ?? 0)}`,
           `usage=${formatSummaryHex(item.usage)}`,

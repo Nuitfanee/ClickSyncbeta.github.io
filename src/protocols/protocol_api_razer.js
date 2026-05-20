@@ -94,6 +94,7 @@
   const RAZER_NOT_ALLOWED_SAME_ID_RETRY = 0;
   const RAZER_LEGACY_NOT_ALLOWED_SAME_ID_RETRY = 2;
   const RAZER_LEGACY_COMMAND_WAIT_MS = 60;
+  const RAZER_WEBHID_REPORT_ID = 0x00;
   // Some wireless paths need a short settle window right after open().
   const RAZER_POST_OPEN_SETTLE_MS = 60;
   // OBM button I/O is noticeably more timing-sensitive than the rest of the
@@ -289,8 +290,6 @@
       transportRole: TRANSPORT_ROLE.SINGLE,
       bodyPid: normalizedPid,
       donglePid: normalizedPid,
-      webhidFeatureReportId: 0x00,
-      featureReportId: 0x00,
       eventReportId: 0x00,
       controlUsagePage: RAZER_WEBHID_CONTROL_USAGE_PAGE,
       pollingMode: "legacy",
@@ -308,18 +307,18 @@
   /*
    * Razer PID capability matrix (single source of truth)
    *
-   * pid     role      feat evt polling  battery  hyperIM  dynamic  tracking  angle  name
-   * 0x00b3  sdongle   00   00  v2       Y        Y        -        Y         -      HyperPolling Wireless Dongle
-   * 0x00b6  body      00   00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wired)
-   * 0x00b7  dongle    00   00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wireless)
-   * 0x00c0  body      04   05  legacy   Y        -        Y        Y         Y      Viper V3 Pro (Wired)
-   * 0x00c1  dongle    04   05  v2       Y        Y        Y        Y         Y      Viper V3 Pro (Wireless)
-   * 0x00c2  body      00   00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wired Alt)
-   * 0x00c3  dongle    00   00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wireless Alt)
-   * 0x00c4  body      00   00  legacy   Y        -        -        Y         -      DeathAdder V3 HyperSpeed (Wired)
-   * 0x00c5  dongle    00   00  legacy   Y        -        -        Y         -      DeathAdder V3 HyperSpeed (Wireless)
-   * 0x00e5  body      04   05  legacy   Y        -        Y        Y         Y      Viper V4 Pro (Wired)
-   * 0x00e6  dongle    04   05  v2       Y        -        Y        Y         Y      Viper V4 Pro (Wireless)
+   * pid     role      rid evt polling  battery  hyperIM  dynamic  tracking  angle  name
+   * 0x00b3  sdongle   00  00  v2       Y        Y        -        Y         -      HyperPolling Wireless Dongle
+   * 0x00b6  body      00  00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wired)
+   * 0x00b7  dongle    00  00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wireless)
+   * 0x00c0  body      00  05  legacy   Y        -        Y        Y         Y      Viper V3 Pro (Wired)
+   * 0x00c1  dongle    00  05  v2       Y        Y        Y        Y         Y      Viper V3 Pro (Wireless)
+   * 0x00c2  body      00  00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wired Alt)
+   * 0x00c3  dongle    00  00  legacy   Y        -        -        Y         -      DeathAdder V3 Pro (Wireless Alt)
+   * 0x00c4  body      00  00  legacy   Y        -        -        Y         -      DeathAdder V3 HyperSpeed (Wired)
+   * 0x00c5  dongle    00  00  legacy   Y        -        -        Y         -      DeathAdder V3 HyperSpeed (Wireless)
+   * 0x00e5  body      00  05  legacy   Y        -        Y        Y         Y      Viper V4 Pro (Wired)
+   * 0x00e6  dongle    00  05  v2       Y        -        Y        Y         Y      Viper V4 Pro (Wireless)
    */
   const PID_CAPABILITY_MATRIX = Object.freeze([
     buildPidMatrixRow(PID.HYPERPOLLING_WIRELESS_DONGLE, "Razer HyperPolling Wireless Dongle", {
@@ -348,7 +347,6 @@
       transportRole: TRANSPORT_ROLE.BODY,
       bodyPid: PID.VIPER_V3_PRO_WIRED,
       donglePid: PID.VIPER_V3_PRO_WIRELESS,
-      featureReportId: 0x04,
       eventReportId: 0x05,
       dynamicSensitivity: true,
       sensorAngle: true,
@@ -358,7 +356,6 @@
       transportRole: TRANSPORT_ROLE.DONGLE,
       bodyPid: PID.VIPER_V3_PRO_WIRED,
       donglePid: PID.VIPER_V3_PRO_WIRELESS,
-      featureReportId: 0x04,
       eventReportId: 0x05,
       pollingMode: "v2",
       hyperpollingIndicatorMode: true,
@@ -395,7 +392,6 @@
       transportRole: TRANSPORT_ROLE.BODY,
       bodyPid: PID.VIPER_V4_PRO_WIRED,
       donglePid: PID.VIPER_V4_PRO_WIRELESS,
-      featureReportId: 0x04,
       eventReportId: 0x05,
       dynamicSensitivity: true,
       sensorAngle: true,
@@ -405,7 +401,6 @@
       transportRole: TRANSPORT_ROLE.DONGLE,
       bodyPid: PID.VIPER_V4_PRO_WIRED,
       donglePid: PID.VIPER_V4_PRO_WIRELESS,
-      featureReportId: 0x04,
       eventReportId: 0x05,
       pollingMode: "v2",
       dynamicSensitivity: true,
@@ -429,19 +424,10 @@
       transportRole: row.transportRole,
       bodyPid: row.bodyPid,
       donglePid: row.donglePid,
-      webhidFeatureReportId: row.webhidFeatureReportId,
-      featureReportId: row.featureReportId,
+      webhidReportId: RAZER_WEBHID_REPORT_ID,
       eventReportId: row.eventReportId,
       controlUsagePage: row.controlUsagePage,
     })]))
-  );
-
-  const PID_FEATURE_REPORT_ID = Object.freeze(
-    Object.fromEntries(PID_CAPABILITY_MATRIX.map((row) => [row.pid, row.featureReportId]))
-  );
-
-  const PID_WEBHID_FEATURE_REPORT_ID = Object.freeze(
-    Object.fromEntries(PID_CAPABILITY_MATRIX.map((row) => [row.pid, row.webhidFeatureReportId]))
   );
 
   const PID_EVENT_REPORT_ID = Object.freeze(
@@ -525,16 +511,6 @@
     return PID_TRANSPORT_META[Number(pid)] || null;
   }
 
-  function getFeatureReportIdForPid(pid) {
-    const rid = PID_FEATURE_REPORT_ID[Number(pid)];
-    return Number.isFinite(rid) ? clampU8(rid) : 0x00;
-  }
-
-  function getWebHidFeatureReportIdForPid(pid) {
-    const rid = PID_WEBHID_FEATURE_REPORT_ID[Number(pid)];
-    return Number.isFinite(rid) ? clampU8(rid) : 0x00;
-  }
-
   function getEventReportIdForPid(pid) {
     const rid = PID_EVENT_REPORT_ID[Number(pid)];
     return Number.isFinite(rid) ? clampU8(rid) : 0x00;
@@ -574,7 +550,7 @@
       this.queue = new SendQueue();
       this.sendTimeoutMs = 1500;
       this.readTimeoutMs = 1500;
-      this._featureReportIds = [0];
+      this._reportId = RAZER_WEBHID_REPORT_ID;
       this._transactionId = 0;
       this._transportMode = RAZER_TRANSPORT_MODE.OFFICIAL;
     }
@@ -585,13 +561,13 @@
       if (Object.prototype.hasOwnProperty.call(opts || {}, "transportMode")) {
         this._transportMode = normalizeRazerTransportMode(opts.transportMode);
       }
-      this._featureReportIds = this._collectFeatureReportIds();
+      this._reportId = this._collectReportId();
       this._transactionId = 0;
     }
 
     setTransportMode(mode) {
       this._transportMode = normalizeRazerTransportMode(mode);
-      this._featureReportIds = this._collectFeatureReportIds();
+      this._reportId = this._collectReportId();
       this._transactionId = 0;
     }
 
@@ -604,13 +580,9 @@
       if (!this.device.opened) throw new ProtocolError("HID device is not opened", "NOT_OPEN");
     }
 
-    _collectFeatureReportIds() {
-      if (this._usesLegacyV3Transport()) {
-        return [getFeatureReportIdForPid(this.productId)];
-      }
-      // Official Synapse WebHID mouse path uses reportId 0 for feature I/O.
-      // The model-level feature/event report ids remain available as semantic metadata.
-      return [getWebHidFeatureReportIdForPid(this.productId)];
+    _collectReportId() {
+      // Razer WebHID feature I/O uses reportId 0 across both V3 legacy and V4 official paths.
+      return RAZER_WEBHID_REPORT_ID;
     }
 
     _nextTransactionId() {
@@ -673,11 +645,7 @@
         const request = ProtocolCodec.parseRazerReport(requestBytes);
 
         const usesLegacyV3 = this._usesLegacyV3Transport();
-        const reportId = Number(this._featureReportIds[0] ?? (
-          usesLegacyV3
-            ? getFeatureReportIdForPid(this.productId)
-            : getWebHidFeatureReportIdForPid(this.productId)
-        ));
+        const reportId = Number(this._reportId ?? RAZER_WEBHID_REPORT_ID);
 
         const retryBudget = usesLegacyV3 ? RAZER_LEGACY_BUSY_RETRY : RAZER_BUSY_RETRY;
         const waitMs = Number.isFinite(Number(opts.waitMs))
@@ -3974,19 +3942,42 @@
         chargeLowThreshold: defaultRawThreshold,
         lowPowerThresholdPercent: TRANSFORMERS.lowPowerRawToPercent(defaultRawThreshold),
       };
+      const isLegacyV3 = this._usesLegacyV3Transport();
+      const queryBatteryField = async (label, packet) => {
+        try {
+          return await this._safeQuery(
+            packet,
+            null,
+            isLegacyV3
+              ? { swallowPermissionPathError: false, swallowCodes: [] }
+              : {}
+          );
+        } catch (err) {
+          if (!isLegacyV3) throw err;
+          console.warn("[Razer] Legacy V3 battery read failed", {
+            field: String(label || ""),
+            pid,
+            transportMode: this._transportMode,
+            code: String(err?.code || ""),
+            message: String(err?.message || err || ""),
+            err,
+          });
+          return null;
+        }
+      };
 
-      const batteryRes = await this._safeQuery(ProtocolCodec.commands.getBattery(tx));
+      const batteryRes = await queryBatteryField("battery", ProtocolCodec.commands.getBattery(tx));
       if (batteryRes?.arguments) {
         out.batteryPercent = TRANSFORMERS.batteryPercentFromRaw(batteryRes.arguments[1] ?? 0);
       }
 
-      const chargingRes = await this._safeQuery(ProtocolCodec.commands.getCharging(tx));
+      const chargingRes = await queryBatteryField("charging", ProtocolCodec.commands.getCharging(tx));
       if (chargingRes?.arguments) {
         out.batteryIsCharging = !!(chargingRes.arguments[1] ?? 0);
       }
 
       if (caps.idle) {
-        const idleRes = await this._safeQuery(ProtocolCodec.commands.getIdle(tx));
+        const idleRes = await queryBatteryField("idle", ProtocolCodec.commands.getIdle(tx));
         if (idleRes?.arguments) {
           const rawIdleSec = ((idleRes.arguments[0] << 8) | (idleRes.arguments[1] & 0xff)) & 0xffff;
           out.deviceIdleTime = TRANSFORMERS.normalizeIdleTime(rawIdleSec);
@@ -3995,7 +3986,7 @@
 
       if (caps.lowBatteryThreshold) {
         const txLow = txForField(pid, "chargeLowThreshold");
-        const lowRes = await this._safeQuery(ProtocolCodec.commands.getLowBatteryThreshold(txLow));
+        const lowRes = await queryBatteryField("lowThreshold", ProtocolCodec.commands.getLowBatteryThreshold(txLow));
         if (lowRes?.arguments) {
           out.chargeLowThreshold = TRANSFORMERS.normalizeLowThreshold(lowRes.arguments[0]);
           out.lowPowerThresholdPercent = TRANSFORMERS.lowPowerRawToPercent(out.chargeLowThreshold);
