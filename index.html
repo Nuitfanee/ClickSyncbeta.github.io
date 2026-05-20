@@ -790,43 +790,33 @@
                 </div>
               </label>
 
-              <!-- Capability-gated feature: SpeedClick / SPDT quick trigger left button -->
-              <label class="advShutterItem" id="speedClickLeftItem" data-adv-item="speedClickLeft" data-adv-control="toggle" data-std-key="speedClickLeft" style="display: none;">
-                <input type="checkbox" class="raw-input" id="speedClickLeftToggle" />
+              <!-- Capability-gated feature: SpeedClick / SPDT mode -->
+              <div class="advShutterItem adv-cycle-item" id="speedClickModeCycle" data-adv-item="speedClickMode" data-adv-control="cycle" role="button" tabindex="0" aria-label="SpeedClick 模式" style="display: none;">
                 <div class="shutter-row">
-                  <div class="shutter-bg"></div><div class="border-deco"></div>
+                  <div class="shutter-bg-base"></div>
+                  <div class="shutter-bg-next"></div>
+                  <div class="border-deco"></div>
                   <div class="content-layer">
                     <div class="meta">
-                      <span class="label-code">SPDT // 左键</span>
-                      <span class="label-title">按键SpeedClick</span>
-                      <span class="label-desc">开启触动SPDT状态，使按键触发更快</span>
+                      <span class="label-code">SPDT // MODE</span>
+                      <span class="label-title">SpeedClick</span>
+                      <span class="label-desc">设置左右键 SpeedClick 触发状态</span>
                     </div>
                     <div class="status-indicator">
-                      <span class="status-text" data-off="OFF" data-on="ON"></span>
+                      <span class="status-text cycle-text">关闭</span>
                       <div class="crosshair"></div>
                     </div>
                   </div>
                 </div>
-              </label>
-
-              <!-- Capability-gated feature: SpeedClick / SPDT quick trigger right button -->
-              <label class="advShutterItem" id="speedClickRightItem" data-adv-item="speedClickRight" data-adv-control="toggle" data-std-key="speedClickRight" style="display: none;">
-                <input type="checkbox" class="raw-input" id="speedClickRightToggle" />
-                <div class="shutter-row">
-                  <div class="shutter-bg"></div><div class="border-deco"></div>
-                  <div class="content-layer">
-                    <div class="meta">
-                      <span class="label-code">SPDT // 右键</span>
-                      <span class="label-title">按键SpeedClick</span>
-                      <span class="label-desc">开启触动SPDT状态，使按键触发更快</span>
-                    </div>
-                    <div class="status-indicator">
-                      <span class="status-text" data-off="OFF" data-on="ON"></span>
-                      <div class="crosshair"></div>
-                    </div>
-                  </div>
+                <div class="adv-cycle-select-wrap" aria-hidden="true" style="display: none;">
+                  <select class="input adv-cycle-select" id="speedClickModeSelect" data-adv-item="speedClickMode" data-adv-control="select" aria-label="SpeedClick 模式">
+                    <option value="0" data-cycle-class="adv-cycle-mode-0">关闭</option>
+                    <option value="1" data-cycle-class="adv-cycle-mode-1">仅左键</option>
+                    <option value="2" data-cycle-class="adv-cycle-mode-2">仅右键</option>
+                    <option value="3" data-cycle-class="adv-cycle-mode-3">左右键</option>
+                  </select>
                 </div>
-              </label>
+              </div>
 
               <!-- Capability-gated feature: competitive wheel mode -->
               <div class="advShutterItem adv-cycle-item" id="scrollHpModeCycle" data-adv-item="scrollHpMode" data-adv-control="cycle" data-std-key="scrollHpMode" role="button" tabindex="0" aria-label="竞技滚轮模式" style="display: none;">

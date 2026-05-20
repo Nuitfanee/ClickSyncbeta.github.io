@@ -567,10 +567,7 @@ id: "atk",
           regions: ["dual-right"],
           requiresCapabilities: ["surfaceFeel"],
         },
-        speedClickLeft: {
-          requiresCapabilities: ["speedEnable"],
-        },
-        speedClickRight: {
+        speedClickMode: {
           requiresCapabilities: ["speedEnable"],
         },
         scrollHpMode: {

@@ -782,17 +782,14 @@
     keyScanningRate: Object.freeze([
       Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="keyScanningRate"][data-adv-control="cycle"]', visibleDisplay: "block" }),
     ]),
-    speedClickLeft: Object.freeze([
-      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="speedClickLeft"][data-adv-control="toggle"]', visibleDisplay: "block" }),
-    ]),
-    speedClickRight: Object.freeze([
-      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="speedClickRight"][data-adv-control="toggle"]', visibleDisplay: "block" }),
+    speedClickMode: Object.freeze([
+      Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="speedClickMode"][data-adv-control="cycle"]', visibleDisplay: "block" }),
     ]),
     scrollHpMode: Object.freeze([
       Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="scrollHpMode"][data-adv-control="cycle"]', visibleDisplay: "block" }),
     ]),
     scrollHpWindowMs: Object.freeze([
-      Object.freeze({ region: "dual-left", selector: '[data-adv-region="dual-left"] .slider-card[data-adv-item="scrollHpWindowMs"][data-adv-control="range"]' }),
+      Object.freeze({ region: "dual-left", selector: '[data-adv-region="dual-left"] .slider-card[data-adv-item="scrollHpWindowMs"][data-adv-control="range"]', visibleDisplay: "block" }),
     ]),
     surfaceModePrimary: Object.freeze([
       Object.freeze({ region: "dual-right", selector: '[data-adv-region="dual-right"] [data-adv-item="surfaceModePrimary"][data-adv-control="toggle"]' }),

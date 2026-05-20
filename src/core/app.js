@@ -1060,6 +1060,12 @@
     { val: 500, label: "500", cls: "adv-cycle-mode-1" },
     { val: 1000, label: "1000", cls: "adv-cycle-mode-2" },
   ]);
+  const SPEED_CLICK_MODE_OPTIONS = normalizeCycleOptions([
+    { val: 0, label: "关闭", cls: "adv-cycle-mode-0" },
+    { val: 1, label: "仅左键", cls: "adv-cycle-mode-1" },
+    { val: 2, label: "仅右键", cls: "adv-cycle-mode-2" },
+    { val: 3, label: "左右键", cls: "adv-cycle-mode-3" },
+  ]);
 
   function parseAdvancedOptionValue(rawValue) {
     const n = Number(rawValue);
@@ -1117,6 +1123,61 @@
 
   function normalizeScrollHpWindowValue(rawValue, options = SCROLL_HP_WINDOW_OPTIONS) {
     return normalizeAdvancedNearestOptionValue(rawValue, options, 100);
+  }
+
+  function normalizeSpeedClickModeValue(rawValue, options = SPEED_CLICK_MODE_OPTIONS) {
+    const n = Math.round(Number(rawValue));
+    const list = Array.isArray(options) && options.length ? options : SPEED_CLICK_MODE_OPTIONS;
+    return list.some((item) => advancedOptionValuesEqual(item.val, n)) ? n : Number(list[0]?.val ?? 0);
+  }
+
+  function speedClickModeFromPair(leftEnabled, rightEnabled) {
+    return (leftEnabled ? 1 : 0) | (rightEnabled ? 2 : 0);
+  }
+
+  function speedClickPairFromMode(rawMode) {
+    const mode = normalizeSpeedClickModeValue(rawMode);
+    return {
+      speedClickLeft: (mode & 1) !== 0,
+      speedClickRight: (mode & 2) !== 0,
+    };
+  }
+
+  function getSpeedClickModeControls() {
+    const cycleBtn = getAdvancedCycleNode("speedClickMode", { region: ADV_REGION_DUAL_RIGHT });
+    const selectEl = getAdvancedSelectControl("speedClickMode", { region: ADV_REGION_DUAL_RIGHT });
+    return { cycleBtn, selectEl };
+  }
+
+  function readSpeedClickModeFromUi() {
+    const { cycleBtn, selectEl } = getSpeedClickModeControls();
+    const options = resolveAdvancedDiscreteOptions(selectEl, SPEED_CLICK_MODE_OPTIONS);
+    return normalizeSpeedClickModeValue(selectEl?.value || cycleBtn?.dataset?.value, options);
+  }
+
+  function updateSpeedClickModeCycleUI(value, animate = true) {
+    const { cycleBtn, selectEl } = getSpeedClickModeControls();
+    if (!cycleBtn) return undefined;
+    const options = resolveAdvancedDiscreteOptions(selectEl, SPEED_CLICK_MODE_OPTIONS);
+    if (!options.length) return undefined;
+    const normalizedValue = normalizeSpeedClickModeValue(value, options);
+    const opt = findAdvancedOption(options, normalizedValue) || options[0];
+    const defaultVal = options[0]?.val;
+    const colorClass = normalizeCycleClassName(opt.cls || "adv-cycle-mode-0");
+    const syncForm = (nextValue) => {
+      cycleBtn.dataset.value = String(nextValue);
+      cycleBtn.classList.toggle("is-selected", !advancedOptionValuesEqual(nextValue, defaultVal));
+      if (selectEl) selectEl.value = String(nextValue);
+    };
+
+    if (!animate) {
+      commitCycleVisual(cycleBtn, opt.val, opt.label, colorClass, syncForm);
+      return opt.val;
+    }
+
+    rotateCycleCrosshair(cycleBtn);
+    animateCycleVisual(cycleBtn, opt.val, opt.label, colorClass, syncForm);
+    return opt.val;
   }
 
   function getSourceCycleByStdKey(stdKey, itemKey = stdKey, fallbackRegion = ADV_REGION_DUAL_RIGHT) {
@@ -1388,6 +1449,47 @@
     syncScrollHpWindowLock();
   }
 
+  function initSpeedClickModeCycle() {
+    const { cycleBtn, selectEl } = getSpeedClickModeControls();
+    if (!cycleBtn || !selectEl) return;
+    if (cycleBtn.dataset.speedClickModeCycleBound === "1") return;
+    cycleBtn.dataset.speedClickModeCycleBound = "1";
+
+    const isWritable = () => {
+      if (!__canWriteAdvancedPanelItem("speedClickMode")) return false;
+      if (cycleBtn.getAttribute("aria-hidden") === "true") return false;
+      if (cycleBtn.getAttribute("aria-disabled") === "true") return false;
+      return true;
+    };
+
+    const commitMode = (rawValue, animate) => {
+      const options = resolveAdvancedDiscreteOptions(selectEl, SPEED_CLICK_MODE_OPTIONS);
+      const nextValue = normalizeSpeedClickModeValue(rawValue, options);
+      updateSpeedClickModeCycleUI(nextValue, animate);
+      if (!isWritable()) return;
+      enqueueDevicePatch(speedClickPairFromMode(nextValue));
+    };
+
+    const commitNext = () => {
+      if (!isWritable()) return;
+      const options = resolveAdvancedDiscreteOptions(selectEl, SPEED_CLICK_MODE_OPTIONS);
+      if (!options.length) return;
+      const currentValue = normalizeSpeedClickModeValue(selectEl.value || cycleBtn.dataset.value, options);
+      const currentIdx = Math.max(0, options.findIndex((item) => advancedOptionValuesEqual(item.val, currentValue)));
+      const nextOpt = options[(currentIdx + 1) % options.length];
+      commitMode(nextOpt?.val, true);
+    };
+
+    cycleBtn.addEventListener("click", commitNext);
+    cycleBtn.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      commitNext();
+    });
+    selectEl.addEventListener("change", () => commitMode(selectEl.value, false));
+    updateSpeedClickModeCycleUI(readSpeedClickModeFromUi(), false);
+  }
+
   /**
    * Initialize polling rate cycle behavior.
    * Purpose: keep UI and config in sync when polling rate changes.
@@ -1426,6 +1528,7 @@
   initKeyScanningRateCycle();
   initSurfaceFeelCycle();
   initScrollHpControls();
+  initSpeedClickModeCycle();
 
 
   const DEFAULT_DPI_LIGHT_EFFECT_OPTIONS = [
@@ -5958,6 +6061,7 @@ function lockEl(el) {
     try { initKeyScanningRateCycle(); } catch (_) {}
     try { initSurfaceFeelCycle(); } catch (_) {}
     try { initScrollHpControls(); } catch (_) {}
+    try { initSpeedClickModeCycle(); } catch (_) {}
     try { initAdvancedLightCycles(); } catch (_) {}
     try { initBasicMonolithUI(); } catch (_) {}
     try { initAdvancedPanelUI(); } catch (_) {}
@@ -9124,18 +9228,6 @@ function openDrawer(btn) {
     enqueueDevicePatch({ rippleControl: !!rippleControlToggle.checked });
   });
 
-  const speedClickLeftToggle = getAdvancedToggleInput("speedClickLeft", { region: ADV_REGION_DUAL_RIGHT });
-  if (speedClickLeftToggle) speedClickLeftToggle.addEventListener("change", () => {
-    if (!__canWriteAdvancedPanelItem("speedClickLeft")) return;
-    enqueueDevicePatch({ speedClickLeft: !!speedClickLeftToggle.checked });
-  });
-
-  const speedClickRightToggle = getAdvancedToggleInput("speedClickRight", { region: ADV_REGION_DUAL_RIGHT });
-  if (speedClickRightToggle) speedClickRightToggle.addEventListener("change", () => {
-    if (!__canWriteAdvancedPanelItem("speedClickRight")) return;
-    enqueueDevicePatch({ speedClickRight: !!speedClickRightToggle.checked });
-  });
-
   const secondarySurfaceToggle = getAdvancedToggleInput("secondarySurfaceToggle", { region: ADV_REGION_DUAL_RIGHT });
   if (secondarySurfaceToggle) {
     secondarySurfaceToggle.addEventListener("change", () => {
@@ -9610,13 +9702,16 @@ function openDrawer(btn) {
     }
 
     const speedClickLeft = readMerged("speedClickLeft");
-    if (speedClickLeft != null) {
-      setCb(getSourceToggleByStdKey("speedClickLeft", ADV_REGION_DUAL_RIGHT), speedClickLeft);
-    }
-
     const speedClickRight = readMerged("speedClickRight");
-    if (speedClickRight != null) {
-      setCb(getSourceToggleByStdKey("speedClickRight", ADV_REGION_DUAL_RIGHT), speedClickRight);
+    if (speedClickLeft != null || speedClickRight != null) {
+      const currentPair = speedClickPairFromMode(readSpeedClickModeFromUi());
+      updateSpeedClickModeCycleUI(
+        speedClickModeFromPair(
+          speedClickLeft == null ? currentPair.speedClickLeft : !!speedClickLeft,
+          speedClickRight == null ? currentPair.speedClickRight : !!speedClickRight
+        ),
+        false
+      );
     }
 
     const scrollHpMode = readMerged("scrollHpMode");
