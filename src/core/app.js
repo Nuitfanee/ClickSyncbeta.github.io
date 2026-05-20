@@ -331,6 +331,28 @@
   let DEVICE_ID = normalizeRuntimeDeviceId();
   let adapter = getRuntimeAdapter(DEVICE_ID);
   let adapterFeatures = adapter?.features || {};
+  let ProtocolApi = window.ProtocolApi || null;
+  let hidApi = window.__HID_API_INSTANCE__ || null;
+  let __cachedDeviceConfig = null;
+  const __hidApiBindings = new WeakSet();
+  let __runtimeBootstrapReady = false;
+
+  const DPI_ABS_MIN = 100;
+  const DPI_ABS_MAX = 45000;
+  const DPI_MIN_DEFAULT = 100;
+  const DPI_MAX_DEFAULT = 8000;
+  let DPI_UI_MAX = 26000;
+  // Legacy/partial callbacks may still report this ceiling even when actual slots are higher.
+  const DPI_SWITCH_CLIP_GUARD_MAX = 26000;
+  let DPI_STEP = Math.max(1, Number(adapter?.ranges?.dpi?.step) || 50);
+  let __capabilities = {
+    dpiSlotCount: 6,
+    maxDpi: DPI_UI_MAX,
+    dpiStep: DPI_STEP,
+    pollingRates: null,
+  };
+  let __capabilitiesDeviceId = normalizeRuntimeDeviceId();
+
   // Single-source runtime helpers for advanced controls:
   // - Resolve source region from adapter.ui.advancedSourceRegionByStdKey.
   // - Query source controls by stdKey (select/range) only.
@@ -4673,7 +4695,7 @@ function lockEl(el) {
   const DEFAULT_SMART_TRACKING_MODE = "symmetric";
   const DEFAULT_SMART_TRACKING_LEVEL = 1;
   const DEFAULT_SMART_TRACKING_LIFT_DISTANCE = 13;
-  const DEFAULT_SMART_TRACKING_LANDING_DISTANCE = 1;
+  const DEFAULT_SMART_TRACKING_LANDING_DISTANCE = 12;
 
   function __normalizeSmartTrackingMode(rawValue) {
     const mode = String(rawValue ?? DEFAULT_SMART_TRACKING_MODE).trim().toLowerCase();
@@ -5890,7 +5912,7 @@ function lockEl(el) {
   // - New device protocol onboarding must complete in DeviceRuntime.ensureProtocolLoaded().
   // - app.js should never hardcode protocol script paths.
   try { await DeviceRuntime?.whenProtocolReady?.(); } catch (e) {}
-  let ProtocolApi = window.ProtocolApi;
+  ProtocolApi = window.ProtocolApi || ProtocolApi;
   if (!ProtocolApi) {
     log(window.tr(
       "未找到 ProtocolApi：请确认已加载对应设备协议脚本",
@@ -5900,13 +5922,12 @@ function lockEl(el) {
   }
 
 
-  let hidApi = window.__HID_API_INSTANCE__;
+  hidApi = window.__HID_API_INSTANCE__ || hidApi;
   if (!hidApi) {
     hidApi = new ProtocolApi.MouseMouseHidApi();
     window.__HID_API_INSTANCE__ = hidApi;
   }
 
-  let __cachedDeviceConfig = null;
   function getCachedDeviceConfig() {
     const reader = window.DeviceReader;
     if (typeof reader?.getCachedConfig === "function") {
@@ -5917,8 +5938,6 @@ function lockEl(el) {
       ? __cachedDeviceConfig
       : null;
   }
-
-  const __hidApiBindings = new WeakSet();
 
   function __bindHidApiEventHandlers(api) {
     if (!api || __hidApiBindings.has(api)) return;
@@ -6214,24 +6233,6 @@ function lockEl(el) {
   const dpiMaxSelect = $("#dpiMaxSelect");
   const dpiAdvancedToggle = $("#dpiAdvancedToggle");
   const dpiAdvancedTitleHint = $("#dpiAdvancedTitleHint");
-
-  const DPI_ABS_MIN = 100;
-  const DPI_ABS_MAX = 45000;
-  const DPI_MIN_DEFAULT = 100;
-  const DPI_MAX_DEFAULT = 8000;
-  let DPI_UI_MAX = 26000;
-  // Legacy/partial callbacks may still report this ceiling even when actual slots are higher.
-  const DPI_SWITCH_CLIP_GUARD_MAX = 26000;
-  let DPI_STEP = Math.max(1, Number(adapter?.ranges?.dpi?.step) || 50);
-
-
-let __capabilities = {
-  dpiSlotCount: 6,
-  maxDpi: DPI_UI_MAX,
-  dpiStep: DPI_STEP,
-  pollingRates: null,
-};
-let __capabilitiesDeviceId = normalizeRuntimeDeviceId();
 
 initAdvancedCycleControls();
 
@@ -9939,6 +9940,10 @@ function openDrawer(btn) {
    */
   async function connectHid(mode = false, isSilent = false) {
 
+    if (!__runtimeBootstrapReady) {
+      __connectPending = { mode, isSilent };
+      return;
+    }
     if (__connectInFlight) {
       __connectPending = { mode, isSilent };
       return;
@@ -10593,6 +10598,14 @@ function openDrawer(btn) {
         }
       });
   };
+
+
+  __runtimeBootstrapReady = true;
+  if (__connectPending && !__connectInFlight) {
+    const pendingConnect = __connectPending;
+    __connectPending = null;
+    setTimeout(() => connectHid(pendingConnect.mode, pendingConnect.isSilent), 0);
+  }
 
 
   if ("requestIdleCallback" in window) {

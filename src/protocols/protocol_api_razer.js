@@ -175,7 +175,7 @@
     smartTrackingMode: "symmetric",
     smartTrackingLevel: 1,
     smartTrackingLiftDistance: 13,
-    smartTrackingLandingDistance: 1,
+    smartTrackingLandingDistance: 12,
   });
   const DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL = Object.freeze({
     isAsymmetric: false,
@@ -1630,16 +1630,11 @@
 
   function buildOfficialSmartTrackingModelFromPublicState(raw = null) {
     const publicState = normalizePublicSmartTrackingState(raw);
-    const landingDistance = clampInt(
-      publicState.smartTrackingLiftDistance - publicState.smartTrackingLandingDistance,
-      1,
-      25
-    );
     return {
       isAsymmetric: publicState.smartTrackingMode === "asymmetric",
       trackingDistance: TRANSFORMERS.smartTrackingLevelToTrackingDistance(publicState.smartTrackingLevel),
       liftOffDistance: publicState.smartTrackingLiftDistance,
-      landingDistance,
+      landingDistance: publicState.smartTrackingLandingDistance,
     };
   }
 
@@ -1648,19 +1643,9 @@
     const trackingDistance = TRANSFORMERS.normalizeSmartTrackingTrackingDistance(
       seed.trackingDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.trackingDistance
     );
-    const liftOffDistance = clampInt(
-      seed.liftOffDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.liftOffDistance,
-      2,
-      26
-    );
-    const officialLandingDistance = clampInt(
-      seed.landingDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.landingDistance,
-      1,
-      25
-    );
     const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
-      liftOffDistance,
-      liftOffDistance - officialLandingDistance
+      seed.liftOffDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.liftOffDistance,
+      seed.landingDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.landingDistance
     );
     return {
       smartTrackingMode: seed.isAsymmetric ? "asymmetric" : "symmetric",
@@ -1682,12 +1667,20 @@
 
   function parseOfficialProximitySensorConfiguration(response) {
     if (!(response?.arguments instanceof Uint8Array)) return null;
+    const dataSize = response?.argumentsData instanceof Uint8Array
+      ? response.argumentsData.length
+      : (Number.isFinite(Number(response?.dataSize)) ? response.dataSize : response.arguments.length);
+    const hasClassSensorEcho =
+      dataSize > 10
+      && readOfficialResponseArgument(response, 0) === OFFICIAL_PROXIMITY_CLASS_ID
+      && readOfficialResponseArgument(response, 1) === OFFICIAL_PROXIMITY_SENSOR_ID;
+    const parmOffset = hasClassSensorEcho ? 2 : 0;
     const out = {
-      classId: readOfficialResponseArgument(response, 0),
-      sensorId: readOfficialResponseArgument(response, 1),
+      classId: hasClassSensorEcho ? readOfficialResponseArgument(response, 0) : OFFICIAL_PROXIMITY_CLASS_ID,
+      sensorId: hasClassSensorEcho ? readOfficialResponseArgument(response, 1) : OFFICIAL_PROXIMITY_SENSOR_ID,
     };
     for (let i = 0; i <= 8; i++) {
-      out[`parm${i}`] = readOfficialResponseArgument(response, i + 2);
+      out[`parm${i}`] = readOfficialResponseArgument(response, i + parmOffset);
     }
     return out;
   }
