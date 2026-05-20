@@ -1525,10 +1525,12 @@
   }
 
 
-  initKeyScanningRateCycle();
-  initSurfaceFeelCycle();
-  initScrollHpControls();
-  initSpeedClickModeCycle();
+  function initAdvancedCycleControls() {
+    try { initKeyScanningRateCycle(); } catch (_) {}
+    try { initSurfaceFeelCycle(); } catch (_) {}
+    try { initScrollHpControls(); } catch (_) {}
+    try { initSpeedClickModeCycle(); } catch (_) {}
+  }
 
 
   const DEFAULT_DPI_LIGHT_EFFECT_OPTIONS = [
@@ -4671,7 +4673,7 @@ function lockEl(el) {
   const DEFAULT_SMART_TRACKING_MODE = "symmetric";
   const DEFAULT_SMART_TRACKING_LEVEL = 1;
   const DEFAULT_SMART_TRACKING_LIFT_DISTANCE = 13;
-  const DEFAULT_SMART_TRACKING_LANDING_DISTANCE = 12;
+  const DEFAULT_SMART_TRACKING_LANDING_DISTANCE = 1;
 
   function __normalizeSmartTrackingMode(rawValue) {
     const mode = String(rawValue ?? DEFAULT_SMART_TRACKING_MODE).trim().toLowerCase();
@@ -6058,10 +6060,7 @@ function lockEl(el) {
     await __ensureProtocolBinding(nextDeviceId, { recreateHidApi: true });
     try { __rebuildDeviceScopedUi({ reason: "runtime-switch" }); } catch (_) {}
     try { __refreshKeymapActionCatalog?.(); } catch (_) {}
-    try { initKeyScanningRateCycle(); } catch (_) {}
-    try { initSurfaceFeelCycle(); } catch (_) {}
-    try { initScrollHpControls(); } catch (_) {}
-    try { initSpeedClickModeCycle(); } catch (_) {}
+    initAdvancedCycleControls();
     try { initAdvancedLightCycles(); } catch (_) {}
     try { initBasicMonolithUI(); } catch (_) {}
     try { initAdvancedPanelUI(); } catch (_) {}
@@ -6233,6 +6232,8 @@ let __capabilities = {
   pollingRates: null,
 };
 let __capabilitiesDeviceId = normalizeRuntimeDeviceId();
+
+initAdvancedCycleControls();
 
 function __refreshRuntimeDeviceState(deviceId = DeviceRuntime.getSelectedDevice()) {
   const nextDeviceId = normalizeRuntimeDeviceId(deviceId);

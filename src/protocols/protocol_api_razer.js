@@ -175,7 +175,7 @@
     smartTrackingMode: "symmetric",
     smartTrackingLevel: 1,
     smartTrackingLiftDistance: 13,
-    smartTrackingLandingDistance: 12,
+    smartTrackingLandingDistance: 1,
   });
   const DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL = Object.freeze({
     isAsymmetric: false,
@@ -1630,11 +1630,16 @@
 
   function buildOfficialSmartTrackingModelFromPublicState(raw = null) {
     const publicState = normalizePublicSmartTrackingState(raw);
+    const landingDistance = clampInt(
+      publicState.smartTrackingLiftDistance - publicState.smartTrackingLandingDistance,
+      1,
+      25
+    );
     return {
       isAsymmetric: publicState.smartTrackingMode === "asymmetric",
       trackingDistance: TRANSFORMERS.smartTrackingLevelToTrackingDistance(publicState.smartTrackingLevel),
       liftOffDistance: publicState.smartTrackingLiftDistance,
-      landingDistance: publicState.smartTrackingLandingDistance,
+      landingDistance,
     };
   }
 
@@ -1643,9 +1648,19 @@
     const trackingDistance = TRANSFORMERS.normalizeSmartTrackingTrackingDistance(
       seed.trackingDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.trackingDistance
     );
-    const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
+    const liftOffDistance = clampInt(
       seed.liftOffDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.liftOffDistance,
-      seed.landingDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.landingDistance
+      2,
+      26
+    );
+    const officialLandingDistance = clampInt(
+      seed.landingDistance ?? DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.landingDistance,
+      1,
+      25
+    );
+    const dist = TRANSFORMERS.normalizeSmartTrackingDistances(
+      liftOffDistance,
+      liftOffDistance - officialLandingDistance
     );
     return {
       smartTrackingMode: seed.isAsymmetric ? "asymmetric" : "symmetric",
