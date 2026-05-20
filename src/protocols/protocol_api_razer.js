@@ -1657,13 +1657,10 @@
 
   function readOfficialResponseArgument(response, index) {
     if (!(response?.arguments instanceof Uint8Array)) return undefined;
-    const dataSize = clampInt(
-      response?.argumentsData instanceof Uint8Array
-        ? response.argumentsData.length
-        : response?.dataSize,
-      0,
-      response.arguments.length
-    );
+    const explicitDataSize = response?.argumentsData instanceof Uint8Array
+      ? response.argumentsData.length
+      : (Number.isFinite(Number(response?.dataSize)) ? response.dataSize : response.arguments.length);
+    const dataSize = clampInt(explicitDataSize, 0, response.arguments.length);
     if (index < 0 || index >= dataSize) return undefined;
     return response.arguments[index];
   }
