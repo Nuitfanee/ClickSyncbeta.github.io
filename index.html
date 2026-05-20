@@ -601,13 +601,13 @@
                 </div>
 
                 <!-- Capability-gated feature: competitive wheel window time -->
-                <div class="slider-card" id="scrollHpWindowMsCard" aria-label="竞技滚轮窗口时间" data-adv-item="scrollHpWindowMs" data-adv-control="range" data-std-key="scrollHpWindowMs" style="display: none;">
+                <div class="slider-card" id="scrollHpWindowMsCard" aria-label="滚轮窗口时间" data-adv-item="scrollHpWindowMs" data-adv-control="range" data-std-key="scrollHpWindowMs" style="display: none;">
                   <div class="card-corner corner-tl"></div><div class="card-corner corner-tr"></div>
                   <div class="card-corner corner-bl"></div><div class="card-corner corner-br"></div>
 
                   <div class="slider-header-row">
                     <div class="slider-info">
-                      <span class="slider-name">竞技滚轮窗口</span>
+                      <span class="slider-name">滚轮窗口</span>
                       <span class="slider-sub">RANGE // 100ms - 1000ms</span>
                     </div>
 
@@ -626,11 +626,11 @@
 
                   <div class="range-wrap">
                     <div class="custom-track"></div>
-                    <input type="range" id="scrollHpWindowMsInput" min="0" max="5" step="1" value="0" data-adv-item="scrollHpWindowMs" data-adv-control="range" data-std-key="scrollHpWindowMs" aria-label="竞技滚轮窗口时间" />
+                    <input type="range" id="scrollHpWindowMsInput" min="0" max="5" step="1" value="0" data-adv-item="scrollHpWindowMs" data-adv-control="range" data-std-key="scrollHpWindowMs" aria-label="滚轮窗口时间" />
                   </div>
 
                   <div class="adv-cycle-select-wrap" aria-hidden="true" style="display: none;">
-                    <select class="input adv-cycle-select" id="scrollHpWindowMsSelect" tabindex="-1" data-adv-item="scrollHpWindowMs" data-adv-control="select" data-std-key="scrollHpWindowMs" aria-label="竞技滚轮窗口时间">
+                    <select class="input adv-cycle-select" id="scrollHpWindowMsSelect" tabindex="-1" data-adv-item="scrollHpWindowMs" data-adv-control="select" data-std-key="scrollHpWindowMs" aria-label="滚轮窗口时间">
                       <option value="100">100</option>
                       <option value="200">200</option>
                       <option value="300">300</option>
@@ -791,7 +791,7 @@
               </label>
 
               <!-- Capability-gated feature: SpeedClick / SPDT mode -->
-              <div class="advShutterItem adv-cycle-item" id="speedClickModeCycle" data-adv-item="speedClickMode" data-adv-control="cycle" role="button" tabindex="0" aria-label="SpeedClick 模式" style="display: none;">
+              <div class="advShutterItem adv-cycle-item" id="speedClickModeCycle" data-adv-item="speedClickMode" data-adv-control="cycle" data-std-key-fanout="speedClickLeft speedClickRight" role="button" tabindex="0" aria-label="SpeedClick 模式" style="display: none;">
                 <div class="shutter-row">
                   <div class="shutter-bg-base"></div>
                   <div class="shutter-bg-next"></div>
@@ -809,7 +809,7 @@
                   </div>
                 </div>
                 <div class="adv-cycle-select-wrap" aria-hidden="true" style="display: none;">
-                  <select class="input adv-cycle-select" id="speedClickModeSelect" data-adv-item="speedClickMode" data-adv-control="select" aria-label="SpeedClick 模式">
+                  <select class="input adv-cycle-select" id="speedClickModeSelect" data-adv-item="speedClickMode" data-adv-control="select" data-std-key-fanout="speedClickLeft speedClickRight" aria-label="SpeedClick 模式">
                     <option value="0" data-cycle-class="adv-cycle-mode-0">关闭</option>
                     <option value="1" data-cycle-class="adv-cycle-mode-1">仅左键</option>
                     <option value="2" data-cycle-class="adv-cycle-mode-2">仅右键</option>
@@ -855,7 +855,7 @@
                   <div class="content-layer">
                     <div class="meta">
                       <span class="label-code">005 // LOD</span>
-                      <span class="label-title">LOD</span>
+                      <span class="label-title">LOD高度</span>
                       <span class="label-desc">设置传感器抬起距离</span>
                     </div>
                     <div class="status-indicator">

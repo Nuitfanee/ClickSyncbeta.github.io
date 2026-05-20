@@ -929,7 +929,7 @@
     const capabilityDensities = (ui?.advancedPanelCapabilityDensities && typeof ui.advancedPanelCapabilityDensities === "object")
       ? ui.advancedPanelCapabilityDensities
       : {};
-    const capabilityDensity = Object.entries(capabilityDensities).find(([capabilityKey]) => !!capabilityBag[capabilityKey]);
+    const capabilityDensity = Object.entries(capabilityDensities).find(([capabilityKey]) => capabilityBag[capabilityKey] === true);
     if (capabilityDensity) return normalizeAdvancedPanelDensity(capabilityDensity[1]);
     const raw = String(ui?.advancedPanelDensity || "").trim().toLowerCase();
     return normalizeAdvancedPanelDensity(raw);
