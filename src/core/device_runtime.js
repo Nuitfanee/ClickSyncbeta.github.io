@@ -244,7 +244,7 @@
   }
 
   function _hasRazerLegacyPrimaryMouseCollection(d) {
-    if (!Array.isArray(d?.collections) || !d.collections.length) return false;
+    if (!Array.isArray(d?.collections) || !d.collections.length) return true;
     let found = false;
     _walkHidCollections(d.collections, (collection) => {
       if (found) return;
@@ -281,7 +281,6 @@
     const legacyControlCandidate = (
       _isRazerViperV3Pid(d?.productId)
       && legacyPrimaryMouseCollection
-      && featureReportCount > 0
     );
     const officialEventCandidate = (
       collections.length > 1
