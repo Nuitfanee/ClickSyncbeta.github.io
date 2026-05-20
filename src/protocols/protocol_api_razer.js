@@ -183,6 +183,10 @@
     liftOffDistance: 13,
     landingDistance: 12,
   });
+  const OFFICIAL_SMART_TRACKING_RAW_DEFAULT = Object.freeze({
+    liftOffDistance: DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.liftOffDistance - 1,
+    landingDistance: DEFAULT_RAZER_SMART_TRACKING_OFFICIAL_MODEL.landingDistance - 1,
+  });
 
   const OFFICIAL_BUTTON_MODE = Object.freeze({
     NORMAL: 0x00,
@@ -1649,6 +1653,35 @@
       smartTrackingLiftDistance: dist.lift,
       smartTrackingLandingDistance: dist.landing,
     };
+  }
+
+  function readOfficialResponseArgument(response, index) {
+    if (!(response?.arguments instanceof Uint8Array)) return undefined;
+    const dataSize = clampInt(
+      response?.argumentsData instanceof Uint8Array
+        ? response.argumentsData.length
+        : response?.dataSize,
+      0,
+      response.arguments.length
+    );
+    if (index < 0 || index >= dataSize) return undefined;
+    return response.arguments[index];
+  }
+
+  function parseOfficialProximitySensorConfiguration(response) {
+    if (!(response?.arguments instanceof Uint8Array)) return null;
+    const out = {
+      classId: readOfficialResponseArgument(response, 0),
+      sensorId: readOfficialResponseArgument(response, 1),
+    };
+    for (let i = 0; i <= 8; i++) {
+      out[`parm${i}`] = readOfficialResponseArgument(response, i + 2);
+    }
+    return out;
+  }
+
+  function officialSmartTrackingDistanceFromRaw(rawValue, fallbackRaw) {
+    return clampU8(rawValue ?? fallbackRaw) + 1;
   }
 
   function requireCapability(caps, capKey, featureName, pid) {
@@ -4111,13 +4144,16 @@
             OFFICIAL_PROXIMITY_SENSOR_ID
           )
         );
-        if (distRes?.arguments) {
-          if (distRes.arguments[3] != null) {
-            officialSmartTracking.liftOffDistance = clampU8(distRes.arguments[3]) + 1;
-          }
-          if (distRes.arguments[4] != null) {
-            officialSmartTracking.landingDistance = clampU8(distRes.arguments[4]) + 1;
-          }
+        const proximityConfig = parseOfficialProximitySensorConfiguration(distRes);
+        if (proximityConfig) {
+          officialSmartTracking.liftOffDistance = officialSmartTrackingDistanceFromRaw(
+            proximityConfig.parm1,
+            OFFICIAL_SMART_TRACKING_RAW_DEFAULT.liftOffDistance
+          );
+          officialSmartTracking.landingDistance = officialSmartTrackingDistanceFromRaw(
+            proximityConfig.parm2,
+            OFFICIAL_SMART_TRACKING_RAW_DEFAULT.landingDistance
+          );
         }
         Object.assign(updates, buildPublicSmartTrackingStateFromOfficialModel(officialSmartTracking));
       }
