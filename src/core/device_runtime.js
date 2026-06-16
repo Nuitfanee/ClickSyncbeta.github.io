@@ -330,12 +330,14 @@
       allowProbeFallback: false,
       implicitReportZero: false,
     };
-    const implicitFeatureReportZero = !!normalizedPolicy.implicitReportZero;
+    const implicitFeatureReportZero = !!(
+      normalizedPolicy.implicitReportZero
+      && featureReportCount === 0
+    );
     const canProbeFeatureReportZero = !!(
       normalizedPolicy.allowProbeFallback
       && featureReportCount > 0
       && !hasFeatureReportZero
-      && !implicitFeatureReportZero
     );
     return {
       vendorId: Number(d?.vendorId ?? 0),

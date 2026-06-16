@@ -298,8 +298,8 @@
    * 0x00b3  sdongle   00  00  v2       official-compatible Y     Y      Y       HyperPolling Wireless Dongle
    * 0x00b6  body      00  00  classic  official-compatible Y     Y      -       DeathAdder V3 Pro (Wired)
    * 0x00b7  dongle    00  00  classic  official-compatible Y     Y      -       DeathAdder V3 Pro (Wireless)
-   * 0x00c0  body      00  05  classic  official-compatible Y     Y      -       Viper V3 Pro (Wired)
-   * 0x00c1  dongle    00  05  v2       official-compatible Y     Y      -       Viper V3 Pro (Wireless)
+   * 0x00c0  body      00  05  classic  official-compatible Y     Y      Y       Viper V3 Pro (Wired)
+   * 0x00c1  dongle    00  05  v2       official-compatible Y     Y      Y       Viper V3 Pro (Wireless)
    * 0x00c2  body      00  00  classic  official-compatible Y     Y      -       DeathAdder V3 Pro (Wired Alt)
    * 0x00c3  dongle    00  00  classic  official-compatible Y     Y      -       DeathAdder V3 Pro (Wireless Alt)
    * 0x00c4  body      00  00  classic  official-compatible Y     Y      -       DeathAdder V3 HyperSpeed (Wired)
@@ -336,6 +336,7 @@
       bodyPid: PID.VIPER_V3_PRO_WIRED,
       donglePid: PID.VIPER_V3_PRO_WIRELESS,
       eventReportId: 0x05,
+      implicitReportZero: true,
       dynamicSensitivity: true,
       sensorAngle: true,
     }),
@@ -347,6 +348,7 @@
       eventReportId: 0x05,
       pollingMode: "v2",
       hyperpollingIndicatorMode: true,
+      implicitReportZero: true,
       dynamicSensitivity: true,
       sensorAngle: true,
       hyperIndicatorTx: 0xff,
