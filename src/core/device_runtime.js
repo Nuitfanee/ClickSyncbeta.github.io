@@ -102,7 +102,8 @@
     const pid = Number(productId);
     if (!RAZER_SUPPORTED_PIDS.has(pid)) return null;
 
-    const policyGetter = window.ProtocolApi?.RAZER_HID?.getConnectionPolicy;
+    const protocolApi = _getRazerProtocolApi();
+    const policyGetter = protocolApi?.RAZER_HID?.getConnectionPolicy;
     if (typeof policyGetter === "function") {
       try {
         const policy = _normalizeRazerConnectionPolicy(policyGetter(pid));
@@ -110,7 +111,7 @@
       } catch (_) {}
     }
 
-    const metaGetter = window.ProtocolApi?.RAZER_HID?.getTransportMeta;
+    const metaGetter = protocolApi?.RAZER_HID?.getTransportMeta;
     if (typeof metaGetter === "function") {
       try {
         const policy = _normalizeRazerConnectionPolicy(metaGetter(pid));
@@ -170,7 +171,7 @@
   }
 
   function _getRazerTransportMeta(productId) {
-    const getter = window.ProtocolApi?.RAZER_HID?.getTransportMeta;
+    const getter = _getRazerProtocolApi()?.RAZER_HID?.getTransportMeta;
     if (typeof getter !== "function") return null;
     try {
       const meta = getter(productId);
@@ -459,13 +460,21 @@
   }
 
   function _buildRazerRequestFilters() {
-    return Array.from(RAZER_SUPPORTED_PIDS, (productId) => ({
-      vendorId: RAZER_VENDOR_ID,
-      productId,
-      ...(_getRazerConnectionPolicy(productId)?.connectionClass === RAZER_CONNECTION_CLASS.OFFICIAL_STRICT
-        ? { usagePage: RAZER_DEFAULT_CONTROL_USAGE_PAGE }
-        : {}),
-    }));
+    if (!_getRazerProtocolApi()?.RAZER_HID?.getConnectionPolicy) return [];
+
+    const filters = [];
+    for (const productId of RAZER_SUPPORTED_PIDS) {
+      const policy = _getRazerConnectionPolicy(productId);
+      if (!policy) continue;
+      filters.push({
+        vendorId: RAZER_VENDOR_ID,
+        productId,
+        ...(policy.connectionClass === RAZER_CONNECTION_CLASS.OFFICIAL_STRICT
+          ? { usagePage: RAZER_DEFAULT_CONTROL_USAGE_PAGE }
+          : {}),
+      });
+    }
+    return filters;
   }
 
   function _isAllowedNinjutsoName(d) {
@@ -686,9 +695,9 @@
    * @param {string} src - Script path.
    * @returns {Promise<void>} Promise resolved when loading completes.
    */
-  function _loadScript(src) {
+  function _loadScript(src, { force = false } = {}) {
     return new Promise((resolve, reject) => {
-      if (_scriptExists(src)) return resolve();
+      if (!force && _scriptExists(src)) return resolve();
       const el = document.createElement("script");
       el.src = src;
       el.async = true;
@@ -701,6 +710,14 @@
   const __protocolApiCache = new Map();
   let __protocolReadyPromise = null;
   let __protocolReadyDevice = "";
+  let __protocolLoadChain = Promise.resolve();
+  let __razerProtocolApiLoadPromise = null;
+
+  function _runProtocolLoadExclusive(task) {
+    const run = __protocolLoadChain.then(task, task);
+    __protocolLoadChain = run.catch(() => {});
+    return run;
+  }
 
   function _getAssetVersion() {
     return String(window.__APP_ASSET_VERSION__ || "").trim();
@@ -737,6 +754,53 @@
       || PROTOCOL_SCRIPT_BY_DEVICE[DEFAULT_DEVICE_ID]
       || PROTOCOL_SCRIPT_BY_DEVICE.rapoo
     );
+  }
+
+  function _getRazerProtocolApi() {
+    const cached = __protocolApiCache.get("razer");
+    if (cached?.RAZER_HID?.getConnectionPolicy) return cached;
+    if (window.ProtocolApi?.RAZER_HID?.getConnectionPolicy) {
+      __protocolApiCache.set("razer", window.ProtocolApi);
+      return window.ProtocolApi;
+    }
+    return null;
+  }
+
+  async function _ensureRazerProtocolApiLoaded() {
+    const cached = _getRazerProtocolApi();
+    if (cached) return cached;
+    if (__razerProtocolApiLoadPromise) return __razerProtocolApiLoadPromise;
+
+    __razerProtocolApiLoadPromise = _runProtocolLoadExclusive(async () => {
+      const cachedInLock = _getRazerProtocolApi();
+      if (cachedInLock) return cachedInLock;
+
+      const prevProtocolApi = window.ProtocolApi;
+      const prevProtocolDevice = window.__DEVICE_PROTOCOL_DEVICE__;
+      const shouldRestoreProtocolApi = (
+        normalizeDeviceId(prevProtocolDevice || getSelectedDevice()) !== "razer"
+      );
+      try {
+        const ready = await _loadProtocolApi("razer");
+        const protocolApi = ready?.ProtocolApi || window.ProtocolApi;
+        if (!protocolApi?.RAZER_HID?.getConnectionPolicy) {
+          throw new Error("Razer ProtocolApi not loaded");
+        }
+        __protocolApiCache.set("razer", protocolApi);
+        return protocolApi;
+      } finally {
+        if (shouldRestoreProtocolApi) {
+          window.ProtocolApi = prevProtocolApi;
+          window.__DEVICE_PROTOCOL_DEVICE__ = prevProtocolDevice;
+        }
+      }
+    });
+
+    try {
+      return await __razerProtocolApiLoadPromise;
+    } finally {
+      __razerProtocolApiLoadPromise = null;
+    }
   }
 
   // ============================================================
@@ -946,6 +1010,9 @@
   async function _requestAuthorizedDeviceSelection({ preferDifferentFrom = null } = {}) {
     if (!navigator.hid) throw new Error("当前浏览器不支持 WebHID");
 
+    try {
+      await _ensureRazerProtocolApiLoaded();
+    } catch (_) {}
     const allFilters = DEVICE_REGISTRY.flatMap((entry) => (
       typeof entry.filters === "function" ? entry.filters() : entry.filters
     ));
@@ -1058,6 +1125,7 @@
     let connectionPlans = null;
     let connectionPlanError = null;
     if (detectedType === "razer") {
+      await _ensureRazerProtocolApiLoaded();
       const authorizedDevices = await _collectAuthorizedDevices({ primary: device, extraDevices: candidates });
       const resolved = resolveRazerConnectionPlans(authorizedDevices, { primaryDevice: device });
       connectionPlans = Array.isArray(resolved?.connectionPlans) ? resolved.connectionPlans : [];
@@ -1131,6 +1199,7 @@
     let connectionPlans = null;
     let connectionPlanError = null;
     if (detectedType === "razer") {
+      await _ensureRazerProtocolApiLoaded();
       const authorizedDevices = await _collectAuthorizedDevices({
         primary,
         extraDevices: [...chooserDevices, ...candidates],
@@ -1166,7 +1235,7 @@
    */
   // Load protocol_api_* script for current selected device.
   // New device protocol onboarding must add mapping here.
-  async function ensureProtocolLoaded(deviceId = null) {
+  async function _loadProtocolApi(deviceId = null) {
     const device = normalizeDeviceId(deviceId || getSelectedDevice());
     const cachedProtocolApi = __protocolApiCache.get(device);
     if (cachedProtocolApi?.MouseMouseHidApi) {
@@ -1181,11 +1250,12 @@
     }
 
     const src = _getProtocolScriptSrc(device);
+    const forceReload = _scriptExists(src);
     const prevProtocolApi = window.ProtocolApi;
     window.ProtocolApi = {};
     try {
-      const loadSrc = _scriptExists(src) ? _withRuntimeSwitch(src) : src;
-      await _loadScript(loadSrc);
+      const loadSrc = forceReload ? _withRuntimeSwitch(src) : src;
+      await _loadScript(loadSrc, { force: forceReload });
     } catch (err) {
       window.ProtocolApi = prevProtocolApi;
       throw err;
@@ -1200,6 +1270,10 @@
     window.__DEVICE_PROTOCOL_DEVICE__ = device;
 
     return { device, ProtocolApi: window.ProtocolApi };
+  }
+
+  async function ensureProtocolLoaded(deviceId = null) {
+    return _runProtocolLoadExclusive(() => _loadProtocolApi(deviceId));
   }
 
 

@@ -3052,7 +3052,12 @@
       }
 
       if (!openErr && probeControlChannel) {
-        await this.probeControlChannel();
+        try {
+          await this.probeControlChannel();
+        } catch (probeErr) {
+          await this.close();
+          throw probeErr;
+        }
       }
 
       let initialReadErr = null;
