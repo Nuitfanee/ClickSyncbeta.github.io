@@ -63,9 +63,8 @@
   const RAZER_SUPPORTED_PIDS = new Set([0x00b3, 0x00b6, 0x00b7, 0x00c0, 0x00c1, 0x00c2, 0x00c3, 0x00c4, 0x00c5, 0x00e5, 0x00e6]);
   const RAZER_DEFAULT_CONTROL_USAGE_PAGE = 0x0c;
   const RAZER_WEBHID_REPORT_ID = 0x00;
-  const RAZER_VIPER_V3_PIDS = new Set([0x00c0, 0x00c1]);
-  const RAZER_LEGACY_MOUSE_USAGE_PAGE = 0x0001;
-  const RAZER_LEGACY_MOUSE_USAGE = 0x0002;
+  const RAZER_STRICT_OFFICIAL_PIDS = new Set([0x00e5, 0x00e6]);
+  const RAZER_IMPLICIT_REPORT_ZERO_PIDS = new Set([0x00b3, 0x00c5]);
   const CRDRAKO_VENDOR_ID = 0x373e;
   const CRDRAKO_SUPPORTED_PIDS = new Set([0x006a, 0x006b]);
 
@@ -76,8 +75,30 @@
     );
   }
 
-  function _isRazerViperV3Pid(productId) {
-    return RAZER_VIPER_V3_PIDS.has(Number(productId));
+  function _getRazerConnectionPolicy(productId) {
+    const pid = Number(productId);
+    const getter = window.ProtocolApi?.RAZER_HID?.getConnectionPolicy;
+    if (typeof getter === "function") {
+      try {
+        const policy = getter(pid);
+        if (policy && typeof policy === "object") {
+          return {
+            connectionClass: String(policy.connectionClass || "official-compatible"),
+            allowReportZeroFallback: !!policy.allowReportZeroFallback,
+            implicitReportZero: !!policy.implicitReportZero,
+          };
+        }
+      } catch (_) {
+        // fall through to runtime-safe defaults
+      }
+    }
+    if (!RAZER_SUPPORTED_PIDS.has(pid)) return null;
+    const strictOfficial = RAZER_STRICT_OFFICIAL_PIDS.has(pid);
+    return {
+      connectionClass: strictOfficial ? "official-strict" : "official-compatible",
+      allowReportZeroFallback: !strictOfficial,
+      implicitReportZero: RAZER_IMPLICIT_REPORT_ZERO_PIDS.has(pid),
+    };
   }
 
   function _isCrdrakoSupportedVidPid(d) {
@@ -112,8 +133,16 @@
     return count;
   }
 
-  function _hasFeatureReports(d) {
-    return _countHidReports(d, "featureReports") > 0;
+  function _hasFeatureReportId(d, reportId) {
+    const expected = Number(reportId);
+    let found = (Array.isArray(d?.featureReports) ? d.featureReports : [])
+      .some((report) => Number(report?.reportId) === expected);
+    _walkHidCollections(d?.collections, (collection) => {
+      if (found) return;
+      found = (Array.isArray(collection?.featureReports) ? collection.featureReports : [])
+        .some((report) => Number(report?.reportId) === expected);
+    });
+    return found;
   }
 
   function _hasInputReports(d) {
@@ -140,6 +169,9 @@
         controlUsagePage: Number.isFinite(Number(meta?.controlUsagePage))
           ? Number(meta.controlUsagePage)
           : RAZER_DEFAULT_CONTROL_USAGE_PAGE,
+        connectionClass: meta?.connectionClass ? String(meta.connectionClass) : "",
+        allowReportZeroFallback: !!meta?.allowReportZeroFallback,
+        implicitReportZero: !!meta?.implicitReportZero,
       };
     } catch (_) {
       return null;
@@ -175,11 +207,11 @@
     );
   }
 
-  function _isRazerLegacyControlCandidate(summary) {
+  function _isRazerOfficialControlFallbackCandidate(summary) {
     return !!(
       summary
-      && _isRazerViperV3Pid(summary.productId)
-      && summary.legacyControlCandidate
+      && summary.allowReportZeroFallback
+      && summary.canTryFeatureReportZero
     );
   }
 
@@ -195,9 +227,11 @@
       device,
       summary: _buildRazerHandleSummary(device),
     }));
-    const legacy = handles.find((item) => _isRazerLegacyControlCandidate(item.summary));
-    if (legacy?.device) return legacy.device;
-    const preferred = handles.find((item) => _isRazerOfficialControlShape(item.summary));
+    const preferred = (
+      handles.find((item) => _isRazerOfficialControlCandidate(item.summary))
+      || handles.find((item) => _isRazerOfficialControlFallbackCandidate(item.summary))
+      || handles.find((item) => _isRazerOfficialControlShape(item.summary))
+    );
     return preferred?.device || null;
   }
 
@@ -208,21 +242,27 @@
     if (primaryHandle && _isRazerOfficialControlCandidate(primaryHandle.summary)) {
       return primaryHandle;
     }
-    return (
-      handles.find((item) => _isRazerOfficialControlCandidate(item.summary))
-      || null
-    );
-  }
+    const strictHandle = handles.find((item) => _isRazerOfficialControlCandidate(item.summary));
+    if (strictHandle) return strictHandle;
 
-  function _pickRazerLegacyControlHandle(handles, primaryDevice = null) {
-    const primaryHandle = primaryDevice
-      ? handles.find((item) => item.device === primaryDevice) || null
-      : null;
-    if (primaryHandle && _isRazerLegacyControlCandidate(primaryHandle.summary)) {
+    if (
+      primaryHandle
+      && _isRazerOfficialControlFallbackCandidate(primaryHandle.summary)
+      && primaryHandle.summary.hasFeatureReportZero
+    ) {
+      return primaryHandle;
+    }
+    const advertisedReportZeroHandle = handles.find((item) => (
+      _isRazerOfficialControlFallbackCandidate(item.summary)
+      && item.summary.hasFeatureReportZero
+    ));
+    if (advertisedReportZeroHandle) return advertisedReportZeroHandle;
+
+    if (primaryHandle && _isRazerOfficialControlFallbackCandidate(primaryHandle.summary)) {
       return primaryHandle;
     }
     return (
-      handles.find((item) => _isRazerLegacyControlCandidate(item.summary))
+      handles.find((item) => _isRazerOfficialControlFallbackCandidate(item.summary))
       || null
     );
   }
@@ -243,19 +283,6 @@
     );
   }
 
-  function _hasRazerLegacyPrimaryMouseCollection(d) {
-    if (!Array.isArray(d?.collections) || !d.collections.length) return true;
-    let found = false;
-    _walkHidCollections(d.collections, (collection) => {
-      if (found) return;
-      found = (
-        Number(collection?.usagePage) === RAZER_LEGACY_MOUSE_USAGE_PAGE
-        && Number(collection?.usage) === RAZER_LEGACY_MOUSE_USAGE
-      );
-    });
-    return found;
-  }
-
   function _buildRazerHandleSummary(d) {
     const collections = Array.isArray(d?.collections) ? d.collections : [];
     const firstCollection = collections[0] || null;
@@ -268,6 +295,7 @@
     const firstCollectionInputReportCount = Array.isArray(firstCollection?.inputReports)
       ? firstCollection.inputReports.length
       : 0;
+    const hasFeatureReportZero = _hasFeatureReportId(d, RAZER_WEBHID_REPORT_ID);
     const controlUsagePage = Number.isFinite(Number(transportMeta?.controlUsagePage))
       ? Number(transportMeta.controlUsagePage)
       : RAZER_DEFAULT_CONTROL_USAGE_PAGE;
@@ -277,16 +305,16 @@
       && usagePage === controlUsagePage
       && firstCollectionFeatureReportCount > 0
     );
-    const legacyPrimaryMouseCollection = _hasRazerLegacyPrimaryMouseCollection(d);
-    const legacyControlCandidate = (
-      _isRazerViperV3Pid(d?.productId)
-      && legacyPrimaryMouseCollection
-    );
     const officialEventCandidate = (
-      collections.length > 1
-      && inputReportCount > 0
+      inputReportCount > 0
       && String(d?.productName || "").trim().length > 0
     );
+    const connectionPolicy = _getRazerConnectionPolicy(d?.productId) || {
+      connectionClass: transportMeta?.connectionClass || "official-compatible",
+      allowReportZeroFallback: !!transportMeta?.allowReportZeroFallback,
+      implicitReportZero: !!transportMeta?.implicitReportZero,
+    };
+    const implicitFeatureReportZero = !!connectionPolicy?.implicitReportZero;
     return {
       vendorId: Number(d?.vendorId ?? 0),
       productId: Number(d?.productId ?? 0),
@@ -301,12 +329,15 @@
       inputReportCount,
       hasFeatureReports: featureReportCount > 0,
       hasInputReports: inputReportCount > 0,
+      hasFeatureReportZero,
+      implicitFeatureReportZero,
+      canTryFeatureReportZero: featureReportCount > 0 || implicitFeatureReportZero,
+      connectionClass: connectionPolicy?.connectionClass || "official-compatible",
+      allowReportZeroFallback: !!connectionPolicy?.allowReportZeroFallback,
       controlUsagePage,
       webhidReportId: transportMeta?.webhidReportId ?? RAZER_WEBHID_REPORT_ID,
       officialControlCandidate,
       officialEventCandidate,
-      legacyPrimaryMouseCollection,
-      legacyControlCandidate,
       modelKey: transportMeta?.modelKey || "",
       transportRole: transportMeta?.transportRole || null,
       bodyPid: transportMeta?.bodyPid ?? null,
@@ -333,14 +364,14 @@
   }
 
   function _buildRazerDebugLabel(controlSummary, eventSummary, eventMode) {
-    const controlLabel = `${_formatRazerHandleRef(controlSummary)} ctrl[c=${controlSummary.collectionCount},up=${_formatRazerUsagePage(controlSummary.usagePage)},rid=${Number(controlSummary.webhidReportId ?? 0)},ff=${Number(controlSummary.firstCollectionFeatureReportCount ?? 0)},fi=${Number(controlSummary.firstCollectionInputReportCount ?? 0)},f=${controlSummary.hasFeatureReports ? "y" : "n"},i=${controlSummary.hasInputReports ? "y" : "n"}]`;
+    const controlLabel = `${_formatRazerHandleRef(controlSummary)} ctrl[c=${controlSummary.collectionCount},up=${_formatRazerUsagePage(controlSummary.usagePage)},rid=${Number(controlSummary.webhidReportId ?? 0)},ff=${Number(controlSummary.firstCollectionFeatureReportCount ?? 0)},fi=${Number(controlSummary.firstCollectionInputReportCount ?? 0)},f=${controlSummary.hasFeatureReports ? "y" : "n"},f0=${controlSummary.hasFeatureReportZero ? "y" : "n"},f0p=${controlSummary.canTryFeatureReportZero ? "y" : "n"},i=${controlSummary.hasInputReports ? "y" : "n"}]`;
     if (eventMode === "shared") return `${controlLabel} evt=shared`;
     return `${controlLabel} evt=${_formatRazerHandleRef(eventSummary)}[c=${eventSummary.collectionCount},up=${_formatRazerUsagePage(eventSummary.usagePage)},fi=${Number(eventSummary.firstCollectionInputReportCount ?? 0)},i=${eventSummary.hasInputReports ? "y" : "n"}]`;
   }
 
   function _buildRazerConnectionPlanError(code, handleSummaries = []) {
     const messageByCode = {
-      MISSING_RAZER_CONTROL_INTERFACE: "Missing Razer control interface",
+      MISSING_RAZER_CONTROL_INTERFACE: "No usable Razer control interface was authorized; clear this site's HID permission and reconnect after fully closing Razer software",
       MISSING_RAZER_BODY_CONTROL_INTERFACE: "Missing Razer body control interface for paired mouse model",
       MISSING_RAZER_EVENT_INTERFACE: "Missing Razer event interface with input reports",
     };
@@ -405,29 +436,10 @@
   }
 
   function _buildRazerRequestFilters() {
-    const filters = [];
-    for (const productId of RAZER_SUPPORTED_PIDS) {
-      if (_isRazerViperV3Pid(productId)) {
-        filters.push({
-          vendorId: RAZER_VENDOR_ID,
-          productId,
-          usagePage: RAZER_LEGACY_MOUSE_USAGE_PAGE,
-          usage: RAZER_LEGACY_MOUSE_USAGE,
-        });
-        filters.push({
-          vendorId: RAZER_VENDOR_ID,
-          productId,
-        });
-        continue;
-      }
-
-      filters.push({
-        vendorId: RAZER_VENDOR_ID,
-        productId,
-        usagePage: RAZER_DEFAULT_CONTROL_USAGE_PAGE,
-      });
-    }
-    return filters;
+    return Array.from(RAZER_SUPPORTED_PIDS, (productId) => ({
+      vendorId: RAZER_VENDOR_ID,
+      productId,
+    }));
   }
 
   function _isAllowedNinjutsoName(d) {
@@ -794,7 +806,7 @@
     const handles = sameModelHandles.length ? sameModelHandles : allHandles;
     const handleSummaries = handles.map((item) => item.summary);
 
-    const buildPlan = (control, event, { transportMode = "" } = {}) => {
+    const buildPlan = (control, event) => {
       const controlSummary = control.summary;
       const eventSummary = event.summary;
       const eventMode = event.device === control.device ? "shared" : "separate";
@@ -804,43 +816,31 @@
           controlDevice: control.device,
           eventDevice: event.device,
           eventMode,
-          debugLabel: transportMode ? `${debugLabel} mode=${transportMode}` : debugLabel,
+          debugLabel,
           controlSummary,
           eventSummary,
-          transportMode: transportMode || "official",
         }],
         connectionPlanError: null,
       };
     };
 
-    const hasViperV3Handle = handles.some((item) => _isRazerViperV3Pid(item.summary?.productId));
-    if (hasViperV3Handle) {
-      const legacyControlHandle = _pickRazerLegacyControlHandle(handles, primaryDevice);
-      if (legacyControlHandle) {
-        return buildPlan(legacyControlHandle, legacyControlHandle, { transportMode: "legacy-v3" });
-      }
+    const preferredControlHandle = _pickRazerOfficialControlHandle(handles, primaryDevice);
+    if (!preferredControlHandle) {
       return {
         connectionPlans: [],
         connectionPlanError: _buildRazerConnectionPlanError("MISSING_RAZER_CONTROL_INTERFACE", handleSummaries),
       };
     }
 
-    const controlHandle = _pickRazerOfficialControlHandle(handles, primaryDevice);
-    if (controlHandle) {
-      const eventHandle = _pickRazerOfficialEventHandle(handles, controlHandle);
-      if (eventHandle) {
-        return buildPlan(controlHandle, eventHandle);
-      }
+    const eventHandle = _pickRazerOfficialEventHandle(handles, preferredControlHandle);
+    if (!eventHandle) {
       return {
         connectionPlans: [],
         connectionPlanError: _buildRazerConnectionPlanError("MISSING_RAZER_EVENT_INTERFACE", handleSummaries),
       };
     }
 
-    return {
-      connectionPlans: [],
-      connectionPlanError: _buildRazerConnectionPlanError("MISSING_RAZER_CONTROL_INTERFACE", handleSummaries),
-    };
+    return buildPlan(preferredControlHandle, eventHandle);
   }
 
 

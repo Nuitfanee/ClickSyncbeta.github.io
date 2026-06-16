@@ -52,6 +52,482 @@
    */
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+  /**
+   * Build the right-side background word as a local Kerna-inspired SVG system:
+   * custom rounded-cell glyphs, gooey merging, and springy mouse repulsion.
+   */
+  function initKineticBackgroundWord() {
+    if (window.matchMedia?.("(max-width: 900px)")?.matches) return () => {};
+
+    const NS = "http://www.w3.org/2000/svg";
+    const pageWords = {
+      keys: "KeyMap",
+      dpi: "DpiSet",
+      advanced: "Params",
+      testtools: "Tools",
+    };
+    const wordViewW = 216;
+    const wordMinViewH = 420;
+    const wordViewPadding = 96;
+    const wordTracking = 6;
+    const wordFontSize = 132;
+    const wordBaseline = wordFontSize * .82;
+    const wordGlyphH = wordFontSize;
+    /*
+     * Fixed local font metrics for the background word system.
+     * Do not live-measure these with getComputedTextLength()/getExtentOfChar():
+     * the decorative word must stay identical across pages and font-load timing.
+     */
+    const glyphMetrics = {
+      K: { advance: 76, width: 82, cx: 39 },
+      e: { advance: 60, width: 66, cx: 31 },
+      y: { advance: 66, width: 72, cx: 34 },
+      M: { advance: 92, width: 100, cx: 47 },
+      a: { advance: 63, width: 70, cx: 32 },
+      p: { advance: 68, width: 74, cx: 34 },
+      D: { advance: 82, width: 88, cx: 41 },
+      i: { advance: 32, width: 34, cx: 16 },
+      S: { advance: 66, width: 72, cx: 33 },
+      t: { advance: 44, width: 50, cx: 22 },
+      P: { advance: 76, width: 82, cx: 38 },
+      r: { advance: 47, width: 52, cx: 23 },
+      m: { advance: 88, width: 96, cx: 45 },
+      s: { advance: 60, width: 66, cx: 30 },
+      T: { advance: 72, width: 78, cx: 36 },
+      o: { advance: 64, width: 70, cx: 32 },
+      l: { advance: 30, width: 32, cx: 15 },
+    };
+    const pairKerning = {
+      Ke: -5,
+      ey: -2,
+      yM: 10,
+      Ma: 14,
+      ap: -5,
+      Dp: -5,
+      pi: 0,
+      iS: 10,
+      Se: 5,
+      et: 4,
+      Pa: -3,
+      ar: -4,
+      ra: -2,
+      am: -3,
+      ms: 16,
+      To: -4,
+      oo: 3,
+      ol: 3,
+      ls: -5,
+    };
+    const defaultGlyphMetric = { advance: 66, width: 72, cx: 33 };
+
+    function getGlyphMetric(char) {
+      return glyphMetrics[char] || defaultGlyphMetric;
+    }
+
+    function getStaticWordLayout(word) {
+      let cursor = 0;
+      const chars = [...word];
+      const items = chars.map((char, index) => {
+        const metric = getGlyphMetric(char);
+        const item = {
+          char,
+          x: cursor,
+          width: metric.width,
+          cx: metric.cx,
+        };
+        const pair = `${char}${chars[index + 1] || ""}`;
+        cursor += metric.advance + wordTracking + (pairKerning[pair] || 0);
+        return item;
+      });
+      return {
+        items,
+        axisLength: Math.max(0, cursor - wordTracking),
+      };
+    }
+
+    const maxWordAxisLength = Math.max(
+      ...Object.values(pageWords).filter(Boolean).map((word) => getStaticWordLayout(word).axisLength)
+    );
+    const wordViewH = Math.max(wordMinViewH, maxWordAxisLength + wordViewPadding);
+    const wordViewRatio = wordViewH / wordViewW;
+
+    let currentMount = null;
+    const host = document.createElement("div");
+    host.className = "kinetic-bg-word";
+    host.setAttribute("aria-hidden", "true");
+    host.innerHTML = `
+      <svg viewBox="0 0 84 560" preserveAspectRatio="xMidYMin meet" focusable="false">
+        <defs>
+          <filter id="clicksyncBgGoo" x="-24%" y="-10%" width="148%" height="120%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="1.15" result="blur"></feGaussianBlur>
+            <feColorMatrix in="blur" mode="matrix"
+              values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -8"
+              result="goo"></feColorMatrix>
+            <feComposite in="SourceGraphic" in2="goo" operator="atop"></feComposite>
+          </filter>
+        </defs>
+        <g class="kinetic-letters"></g>
+      </svg>
+    `;
+    document.body.appendChild(host);
+
+    const svg = host.querySelector("svg");
+    const letters = host.querySelector(".kinetic-letters");
+    const pointer = { x: -9999, y: -9999, active: false };
+    const glyphs = [];
+    let activeWord = "";
+    let activePageKey = "";
+    let wordAxisLength = 0;
+    let rafId = 0;
+    let lastFrameTime = performance.now();
+    let reduceMotion = false;
+    let hostRectCache = null;
+    let lettersMatrixInverseCache = null;
+    let pointerInfluencing = false;
+
+    try {
+      reduceMotion = !!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    } catch (_) {}
+
+    function makeSvg(name, attrs = {}) {
+      const node = document.createElementNS(NS, name);
+      Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, String(value)));
+      return node;
+    }
+
+    function getPlacementAnchor(pageKey) {
+      if (pageKey === "keys") return document.querySelector("#keys .kmCard");
+      if (pageKey === "dpi") return document.querySelector("#dpi .card-dpi-meta") || document.querySelector("#dpi .pagegrid");
+      if (pageKey === "basic") return document.querySelector("#basicMonolith");
+      if (pageKey === "advanced") return document.querySelector("#advancedPanel") || document.querySelector("#advanced");
+      if (pageKey === "testtools") return document.querySelector("#testtools .testtoolsCard") || document.querySelector("#testtools");
+      return document.querySelector("main.stage");
+    }
+
+    function getCurrentPageKey() {
+      let key = (location.hash || "#keys").replace("#", "") || "keys";
+      if (key === "tuning") key = "basic";
+      if (!document.getElementById(key)) key = "keys";
+      return key;
+    }
+
+    function clampNumber(value, min, max) {
+      return Math.max(min, Math.min(value, max));
+    }
+
+    function refreshWordGeometryCache() {
+      try {
+        hostRectCache = host.getBoundingClientRect();
+        const matrix = letters.getScreenCTM();
+        lettersMatrixInverseCache = matrix ? matrix.inverse() : null;
+      } catch (_) {
+        hostRectCache = null;
+        lettersMatrixInverseCache = null;
+      }
+    }
+
+    function clearWordGeometryCache() {
+      hostRectCache = null;
+      lettersMatrixInverseCache = null;
+      pointerInfluencing = false;
+    }
+
+    function isPointerInInfluenceBand() {
+      const hostRect = hostRectCache;
+      if (!hostRect) return false;
+      return (
+        pointer.x >= hostRect.left - 80 &&
+        pointer.x <= hostRect.right + 80 &&
+        pointer.y >= hostRect.top - 40 &&
+        pointer.y <= hostRect.bottom + 40
+      );
+    }
+
+    function hasActiveGlyphMotion() {
+      return glyphs.some((glyph) => (
+        Math.abs(glyph.x) > 0.02 ||
+        Math.abs(glyph.y) > 0.02 ||
+        Math.abs(glyph.vx) > 0.02 ||
+        Math.abs(glyph.vy) > 0.02
+      ));
+    }
+
+    function placeHost(pageKey) {
+      const anchor = getPlacementAnchor(pageKey);
+      const grid = currentMount || host.parentElement || document.querySelector(".grid-bg");
+      if (!grid || (pageKey !== "keys" && !anchor)) return;
+
+      const gridRect = grid.getBoundingClientRect();
+      const hostWidth = Math.max(1, host.getBoundingClientRect().width || 186);
+      const ratio = Number.isFinite(wordViewRatio) && wordViewRatio > 0 ? wordViewRatio : (720 / wordViewW);
+      const naturalHeight = hostWidth * ratio;
+      const height = naturalHeight + 6;
+
+      let left = 0;
+      let rawTop = 0;
+      if (pageKey === "keys") {
+        const viewportRight = clampNumber(window.innerWidth * 0.014, 18, 34);
+        left = window.innerWidth - gridRect.left - viewportRight - hostWidth;
+        rawTop = 44 - gridRect.top;
+      } else {
+        const anchorRect = anchor.getBoundingClientRect();
+        const gap = -85;
+        const topOffset = -10;
+        left = anchorRect.right - gridRect.left + gap;
+        rawTop = anchorRect.top - gridRect.top + topOffset;
+      }
+
+      const top = Math.max(24, Math.min(rawTop, window.innerHeight - height - 24));
+
+      host.style.left = `${left}px`;
+      host.style.right = "auto";
+      host.style.top = `${top}px`;
+      host.style.height = `${height}px`;
+      refreshWordGeometryCache();
+    }
+
+    function renderWord(word) {
+      if (!word || word === activeWord) return;
+      activeWord = word;
+      glyphs.length = 0;
+      letters.textContent = "";
+
+      const viewW = wordViewW;
+      const viewH = wordViewH;
+      svg.setAttribute("viewBox", `0 0 ${viewW} ${viewH}`);
+      letters.setAttribute("transform", `translate(${viewW - 30} 54) rotate(90)`);
+      const layout = getStaticWordLayout(word);
+
+      const pendingGlyphs = layout.items.map((item) => {
+        const glyph = makeSvg("g", {
+          class: "kinetic-glyph",
+          "data-char": item.char,
+        });
+
+        const shadow = makeSvg("text", {
+          class: "kinetic-text-shadow",
+          x: 7,
+          y: wordBaseline + 9,
+        });
+        shadow.textContent = item.char;
+        glyph.appendChild(shadow);
+
+        const main = makeSvg("text", {
+          class: "kinetic-text-main",
+          x: 0,
+          y: wordBaseline,
+        });
+        main.textContent = item.char;
+        glyph.appendChild(main);
+
+        letters.appendChild(glyph);
+        return { glyph, item };
+      });
+
+      pendingGlyphs.forEach(({ glyph, item }) => {
+        const baseX = item.x;
+
+        glyphs.push({
+          el: glyph,
+          glyphW: item.width,
+          glyphH: wordGlyphH,
+          baseX,
+          baseY: 0,
+          localCx: baseX + item.cx,
+          localCy: wordBaseline - wordGlyphH / 2,
+          x: 0,
+          y: reduceMotion ? 0 : -12,
+          vx: 0,
+          vy: 0,
+        });
+      });
+      wordAxisLength = layout.axisLength;
+
+      requestAnimationFrame(() => {
+        placeHost(activePageKey || getCurrentPageKey());
+        requestTick();
+      });
+    }
+
+    function settleSpring(glyph, targetX, targetY, dt) {
+      if (reduceMotion) {
+        glyph.x = targetX;
+        glyph.y = targetY;
+        glyph.vx = 0;
+        glyph.vy = 0;
+        return;
+      }
+
+      const stiffness = 100;
+      const damping = 10;
+      const mass = 1;
+      const step = Math.min(Math.max(dt, 0.001), 0.032);
+
+      const ax = (stiffness * (targetX - glyph.x) - damping * glyph.vx) / mass;
+      const ay = (stiffness * (targetY - glyph.y) - damping * glyph.vy) / mass;
+
+      glyph.vx += ax * step;
+      glyph.vy += ay * step;
+      glyph.x += glyph.vx * step;
+      glyph.y += glyph.vy * step;
+
+      if (Math.abs(targetX - glyph.x) < 0.02 && Math.abs(glyph.vx) < 0.02) {
+        glyph.x = targetX;
+        glyph.vx = 0;
+      }
+      if (Math.abs(targetY - glyph.y) < 0.02 && Math.abs(glyph.vy) < 0.02) {
+        glyph.y = targetY;
+        glyph.vy = 0;
+      }
+    }
+
+    function deactivatePointer(schedule = true) {
+      pointer.active = false;
+      pointer.x = -9999;
+      pointer.y = -9999;
+      pointerInfluencing = false;
+      if (schedule) requestTick();
+    }
+
+    function isPointerInViewport() {
+      return (
+        pointer.x >= 0 &&
+        pointer.x <= window.innerWidth &&
+        pointer.y >= 0 &&
+        pointer.y <= window.innerHeight
+      );
+    }
+
+    function handlePointerBoundaryExit(event) {
+      if (!event.relatedTarget) deactivatePointer();
+    }
+
+    function requestTick() {
+      if (rafId) return;
+      lastFrameTime = performance.now();
+      rafId = requestAnimationFrame(tick);
+    }
+
+    function tick(now = performance.now()) {
+      rafId = 0;
+      const dt = (now - lastFrameTime) / 1000;
+      lastFrameTime = now;
+      let localPointer = null;
+      if (pointer.active) {
+        if (!isPointerInViewport()) {
+          deactivatePointer(false);
+        }
+      }
+      if (pointer.active) {
+        try {
+          if (!hostRectCache || !lettersMatrixInverseCache) refreshWordGeometryCache();
+          const inInfluenceBand = isPointerInInfluenceBand();
+          const matrix = inInfluenceBand ? lettersMatrixInverseCache : null;
+          if (matrix) {
+            localPointer = new DOMPoint(pointer.x, pointer.y).matrixTransform(matrix);
+            if (
+              localPointer.x < -60 ||
+              localPointer.x > wordAxisLength + 60 ||
+              localPointer.y < -90 ||
+              localPointer.y > 220
+            ) {
+              localPointer = null;
+            }
+          }
+        } catch (_) {
+          localPointer = null;
+        }
+      }
+      pointerInfluencing = !!localPointer;
+
+      const kernaShift = 40;
+      let needsNextFrame = false;
+      glyphs.forEach((glyph) => {
+        let tx = 0;
+        let ty = 0;
+        if (localPointer) {
+          const dx = localPointer.x - glyph.localCx;
+          tx = dx > 0 ? -kernaShift : kernaShift;
+          ty = 0;
+        }
+
+        settleSpring(glyph, tx, ty, dt);
+        if (
+          Math.abs(tx - glyph.x) > 0.02 ||
+          Math.abs(ty - glyph.y) > 0.02 ||
+          Math.abs(glyph.vx) > 0.02 ||
+          Math.abs(glyph.vy) > 0.02
+        ) {
+          needsNextFrame = true;
+        }
+        glyph.el.setAttribute(
+          "transform",
+          `translate(${glyph.baseX + glyph.x} ${glyph.baseY + glyph.y}) ` +
+          `translate(${glyph.glyphW / 2} ${glyph.glyphH / 2}) scale(1) ` +
+          `translate(${-glyph.glyphW / 2} ${-glyph.glyphH / 2})`
+        );
+      });
+      if (needsNextFrame) requestTick();
+    }
+
+    function setPageWord(pageKey) {
+      activePageKey = pageKey || getCurrentPageKey();
+      const nextWord = pageWords[activePageKey] || "";
+      host.hidden = !nextWord;
+      const mount =
+        document.querySelector("#app-layer > .grid-bg") ||
+        document.querySelector(".grid-bg") ||
+        document.querySelector("#app-layer") ||
+        document.body;
+      if (mount && mount !== currentMount) {
+        mount.appendChild(host);
+        currentMount = mount;
+      }
+
+      if (!nextWord) {
+        activeWord = "";
+        wordAxisLength = 0;
+        glyphs.length = 0;
+        letters.textContent = "";
+        clearWordGeometryCache();
+        deactivatePointer(false);
+        return;
+      }
+
+      placeHost(activePageKey);
+      if (nextWord) renderWord(nextWord);
+    }
+
+    window.addEventListener("pointermove", (event) => {
+      pointer.x = event.clientX;
+      pointer.y = event.clientY;
+      pointer.active = true;
+      if (!hostRectCache) refreshWordGeometryCache();
+      if (isPointerInInfluenceBand() || pointerInfluencing || hasActiveGlyphMotion()) {
+        requestTick();
+      }
+    }, { passive: true });
+    window.addEventListener("pointerleave", deactivatePointer, { passive: true });
+    window.addEventListener("pointercancel", deactivatePointer, { passive: true });
+    window.addEventListener("blur", deactivatePointer);
+    window.addEventListener("mouseout", handlePointerBoundaryExit, { passive: true });
+    document.addEventListener("mouseleave", deactivatePointer, { passive: true });
+    document.addEventListener("pointerout", handlePointerBoundaryExit, { passive: true });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) deactivatePointer();
+    });
+    window.addEventListener("resize", () => {
+      setPageWord(getCurrentPageKey());
+      requestTick();
+    }, { passive: true });
+
+    setPageWord(getCurrentPageKey());
+    window.addEventListener("beforeunload", () => cancelAnimationFrame(rafId), { once: true });
+    return setPageWord;
+  }
+
+  const setKineticBackgroundWord = initKineticBackgroundWord();
+
   // Advanced panel semantic query contract.
   // - Always query by data-adv-* semantic attributes.
   // - Never re-introduce brand-prefixed ids/selectors in app.js.
@@ -334,8 +810,12 @@
   let ProtocolApi = window.ProtocolApi || null;
   let hidApi = window.__HID_API_INSTANCE__ || null;
   let __cachedDeviceConfig = null;
+  let __onboardMemoryModeEnabledByConnectConfirm = false;
+  let __onboardMemoryEmergencyDisableInFlight = false;
   const __hidApiBindings = new WeakSet();
   let __runtimeBootstrapReady = false;
+  const ONBOARD_MEMORY_EMERGENCY_MARK_TTL_MS = 24 * 60 * 60 * 1000;
+  const ONBOARD_MEMORY_EMERGENCY_MARK_PREFIX = "clicksync:onboardMemoryEnabledByConnectConfirm";
 
   const DPI_ABS_MIN = 100;
   const DPI_ABS_MAX = 45000;
@@ -3491,6 +3971,9 @@ function lockEl(el) {
     document.body.classList.toggle("page-advanced", key === "advanced");
     document.body.classList.toggle("page-testtools", key === "testtools");
 
+    if (typeof setKineticBackgroundWord === "function") {
+      setKineticBackgroundWord(key);
+    }
 
     if (key !== "testtools") {
       try {
@@ -4567,16 +5050,6 @@ function lockEl(el) {
     return ms <= 0 ? 100 : ms;
   }
 
-  let __pendingOnboardMemoryAutoEnableCheck = false;
-
-  function __armOnboardMemoryAutoEnableCheck() {
-    __pendingOnboardMemoryAutoEnableCheck = !!hasFeature("autoEnableOnboardMemoryOnConnect");
-  }
-
-  function __clearOnboardMemoryAutoEnableCheck() {
-    __pendingOnboardMemoryAutoEnableCheck = false;
-  }
-
   function __getOnboardMemoryDisableConfirmText() {
     const text = String(adapter?.ui?.onboardMemoryDisableConfirmText || "").trim();
     return text || window.tr(
@@ -4585,17 +5058,212 @@ function lockEl(el) {
     );
   }
 
-  function __tryAutoEnableOnboardMemoryByConfig(cfg) {
-    if (!__pendingOnboardMemoryAutoEnableCheck) return;
-    __pendingOnboardMemoryAutoEnableCheck = false;
-    if (!hasFeature("autoEnableOnboardMemoryOnConnect")) return;
-    const onboardMemoryMode = readStandardValue(cfg, "onboardMemoryMode");
-    if (onboardMemoryMode == null || !!onboardMemoryMode) return;
-    enqueueDevicePatch({ onboardMemoryMode: true });
-    log(window.tr(
-      "检测到板载内存模式未开启，已自动开启",
-      "Onboard memory mode was disabled and has been auto-enabled"
-    ));
+  function __getOnboardMemoryEnableConfirmText() {
+    const fallbackZh = "检测到当前罗技设备未开启板载内存模式。\n\n网页驱动需要板载内存模式，才能写入并使用设备配置；你也可以先在 GHUB 中手动开启。\n\n未适配型号可能因板载配置为空出现左右键或其他按键异常；若异常，关闭板载内存模式即可。若按键异常，可按 Ctrl+Alt+Shift+O 关闭板载内存模式。\n\n确定：开启板载内存模式并进入；取消：不启用，继续进入";
+    const fallbackEn = "Onboard Memory Mode is currently disabled.\n\nThe web driver needs Onboard Memory Mode to write and use device settings; you can also enable it in GHUB first.\n\nUnsupported models may have empty onboard profiles and lose left/right click or other buttons; if anything behaves abnormally, turn off Onboard Memory Mode. If buttons behave abnormally, press Ctrl+Alt+Shift+O to turn off Onboard Memory Mode.\n\nOK: enable Onboard Memory Mode and enter; Cancel: continue without enabling";
+    const pair = adapter?.ui?.onboardMemoryEnableConfirmText;
+    if (Array.isArray(pair)) {
+      const zh = String(pair[0] ?? "").trim();
+      const en = String(pair[1] ?? "").trim();
+      if (zh || en) return window.tr(zh || en, en || zh);
+    }
+    const text = String(pair || "").trim();
+    return text || window.tr(fallbackZh, fallbackEn);
+  }
+
+  function __hasOnboardMemoryEmergencyHotkeyFeature() {
+    return hasFeature("emergencyDisableOnboardMemoryHotkey");
+  }
+
+  function __getOnboardMemoryEmergencyDeviceKey() {
+    const device = hidApi?.device;
+    if (!device) return "";
+    const vendorId = Number(device.vendorId);
+    const productId = Number(device.productId);
+    const productName = String(device.productName || "").trim().toLowerCase();
+    if (!Number.isFinite(vendorId) || !Number.isFinite(productId) || !productName) return "";
+    return [
+      vendorId.toString(16).padStart(4, "0"),
+      productId.toString(16).padStart(4, "0"),
+      productName,
+    ].join(":");
+  }
+
+  function __getOnboardMemoryEmergencyMarkerKey(deviceKey = __getOnboardMemoryEmergencyDeviceKey()) {
+    return deviceKey ? `${ONBOARD_MEMORY_EMERGENCY_MARK_PREFIX}:${deviceKey}` : "";
+  }
+
+  function __clearOnboardMemoryEmergencyMarker(deviceKey = __getOnboardMemoryEmergencyDeviceKey()) {
+    const key = __getOnboardMemoryEmergencyMarkerKey(deviceKey);
+    if (!key) return;
+    try {
+      window.localStorage?.removeItem(key);
+    } catch (err) {
+      console.warn("[Logitech] Failed to clear onboard memory mode emergency marker", err);
+    }
+  }
+
+  function __writeOnboardMemoryEmergencyMarker() {
+    const deviceKey = __getOnboardMemoryEmergencyDeviceKey();
+    const key = __getOnboardMemoryEmergencyMarkerKey(deviceKey);
+    if (!key) return false;
+    const now = Date.now();
+    const marker = {
+      enabledByConnectConfirm: true,
+      deviceKey,
+      createdAt: now,
+      expiresAt: now + ONBOARD_MEMORY_EMERGENCY_MARK_TTL_MS,
+    };
+    try {
+      window.localStorage?.setItem(key, JSON.stringify(marker));
+      return true;
+    } catch (err) {
+      console.warn("[Logitech] Failed to write onboard memory mode emergency marker", err);
+      return false;
+    }
+  }
+
+  function __readOnboardMemoryEmergencyMarker() {
+    const key = __getOnboardMemoryEmergencyMarkerKey();
+    if (!key) return false;
+    try {
+      const raw = window.localStorage?.getItem(key);
+      if (!raw) return false;
+      const marker = JSON.parse(raw);
+      const expiresAt = Number(marker?.expiresAt);
+      const valid = marker?.enabledByConnectConfirm === true &&
+        Number.isFinite(expiresAt) &&
+        expiresAt > Date.now();
+      if (!valid) {
+        window.localStorage?.removeItem(key);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      try { window.localStorage?.removeItem(key); } catch (_) {}
+      console.warn("[Logitech] Failed to read onboard memory mode emergency marker", err);
+      return false;
+    }
+  }
+
+  function __markOnboardMemoryEnabledByConnectConfirm() {
+    __onboardMemoryModeEnabledByConnectConfirm = true;
+    __writeOnboardMemoryEmergencyMarker();
+  }
+
+  function __clearOnboardMemoryEmergencyEligibility() {
+    __onboardMemoryModeEnabledByConnectConfirm = false;
+    __clearOnboardMemoryEmergencyMarker();
+  }
+
+  function __syncOnboardMemoryEmergencyEligibilityFromConfig(cfg) {
+    if (!__hasOnboardMemoryEmergencyHotkeyFeature()) return;
+    if (!cfg || typeof cfg !== "object") return;
+    try {
+      if (readStandardValue(cfg, "onboardMemoryMode") === false) {
+        __clearOnboardMemoryEmergencyEligibility();
+      }
+    } catch (err) {
+      console.warn("[Logitech] Failed to sync onboard memory mode emergency marker from config", err);
+    }
+  }
+
+  function __hasOnboardMemoryEmergencyDisableEligibility() {
+    if (!__hasOnboardMemoryEmergencyHotkeyFeature()) return false;
+    if (!isHidOpened()) return false;
+    if (__onboardMemoryModeEnabledByConnectConfirm) return true;
+    if (!__readOnboardMemoryEmergencyMarker()) return false;
+    __onboardMemoryModeEnabledByConnectConfirm = true;
+    return true;
+  }
+
+  function __isOnboardMemoryEmergencyHotkeyEvent(event) {
+    if (!event) return false;
+    if (!event.ctrlKey || !event.altKey || !event.shiftKey || event.metaKey) return false;
+    const key = String(event.key || "").trim().toLowerCase();
+    return event.code === "KeyO" || key === "o";
+  }
+
+  async function __disableOnboardMemoryModeByEmergencyHotkey() {
+    if (__onboardMemoryEmergencyDisableInFlight) return;
+    if (!__hasOnboardMemoryEmergencyDisableEligibility()) return;
+    __onboardMemoryEmergencyDisableInFlight = true;
+    try {
+      if (typeof hidApi?.setOnboardMemoryMode !== "function") {
+        throw new Error("hidApi.setOnboardMemoryMode is not available");
+      }
+      await hidApi.setOnboardMemoryMode(false);
+      __clearOnboardMemoryEmergencyEligibility();
+
+      const cachedCfg = getCachedDeviceConfig();
+      const nextCfg = Object.assign({}, (cachedCfg && typeof cachedCfg === "object") ? cachedCfg : {}, {
+        onboardMemoryMode: false,
+      });
+      __cachedDeviceConfig = nextCfg;
+      try {
+        applyConfigToUi(nextCfg, { trustBatteryFromCfg: false });
+      } catch (syncErr) {
+        console.warn("[Logitech] Failed to sync onboard memory mode UI after emergency disable", syncErr);
+      }
+    } catch (err) {
+      console.warn("[Logitech] Failed to disable onboard memory mode by emergency hotkey", err);
+    } finally {
+      __onboardMemoryEmergencyDisableInFlight = false;
+    }
+  }
+
+  function __handleOnboardMemoryEmergencyHotkey(event) {
+    if (!__isOnboardMemoryEmergencyHotkeyEvent(event)) return;
+    if (event.repeat) return;
+    if (!__onboardMemoryEmergencyDisableInFlight && !__hasOnboardMemoryEmergencyDisableEligibility()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (__onboardMemoryEmergencyDisableInFlight) return;
+    void __disableOnboardMemoryModeByEmergencyHotkey();
+  }
+
+  async function __maybeConfirmEnableOnboardMemoryBeforeEnter(cfg, handshakeSeq) {
+    const fallbackCfg = (cfg && typeof cfg === "object") ? cfg : null;
+    if (!hasFeature("confirmEnableOnboardMemoryOnConnect")) return fallbackCfg;
+    let onboardMemoryMode;
+    try {
+      onboardMemoryMode = readStandardValue(cfg, "onboardMemoryMode");
+    } catch (err) {
+      console.warn("[Logitech] Failed to read onboard memory mode during connect", err);
+      return fallbackCfg;
+    }
+    if (onboardMemoryMode === false) {
+      __clearOnboardMemoryEmergencyEligibility();
+    }
+    if (onboardMemoryMode !== false) return fallbackCfg;
+    if (__activeHandshakeSeq !== handshakeSeq) return fallbackCfg;
+
+    let ok = false;
+    try {
+      ok = confirm(__getOnboardMemoryEnableConfirmText());
+    } catch (err) {
+      console.warn("[Logitech] Failed to show onboard memory mode enable confirmation", err);
+      return fallbackCfg;
+    }
+    if (!ok) return fallbackCfg;
+    if (__activeHandshakeSeq !== handshakeSeq) return fallbackCfg;
+
+    try {
+      if (typeof hidApi?.setOnboardMemoryMode !== "function") {
+        throw new Error("hidApi.setOnboardMemoryMode is not available");
+      }
+      await hidApi.setOnboardMemoryMode(true);
+
+      // Keep the connect-time UI sync narrow. Enabling OMM may refresh profile data
+      // internally, but entry only needs the mode toggle to reflect the accepted write.
+      __markOnboardMemoryEnabledByConnectConfirm();
+      const nextCfg = Object.assign({}, fallbackCfg || {}, { onboardMemoryMode: true });
+      __cachedDeviceConfig = nextCfg;
+      return nextCfg;
+    } catch (err) {
+      console.warn("[Logitech] Failed to enable onboard memory mode during connect", err);
+      return fallbackCfg;
+    }
   }
 
   const HYPERPOLLING_MODE_OPTIONS = [
@@ -5950,7 +6618,10 @@ function lockEl(el) {
     api.onConfig((cfg) => {
       try {
         if (api !== hidApi) return;
-        if (cfg && typeof cfg === "object") __cachedDeviceConfig = cfg;
+        if (cfg && typeof cfg === "object") {
+          __cachedDeviceConfig = cfg;
+          __syncOnboardMemoryEmergencyEligibilityFromConfig(cfg);
+        }
         const isHandshakePhase = hidConnecting || __activeHandshakeSeq !== 0 || (__connectInFlight && !hidLinked);
         if (isHandshakePhase || !isHidOpened()) return;
         const cfgDeviceName = String(cfg?.deviceName || "").trim();
@@ -5960,7 +6631,6 @@ function lockEl(el) {
 
         hidLinked = true;
         __writesEnabled = true;
-        __tryAutoEnableOnboardMemoryByConfig(cfg);
       } catch (e) {
         logErr(e, window.tr("搴旂敤閰嶇疆澶辫触", "Apply config failed"));
       }
@@ -6017,6 +6687,8 @@ function lockEl(el) {
 
   function __resetDeviceScopedTransientState() {
     __cachedDeviceConfig = null;
+    __onboardMemoryModeEnabledByConnectConfirm = false;
+    __onboardMemoryEmergencyDisableInFlight = false;
     __resetBatterySessionState({ clearText: true });
     __writesEnabled = false;
     __pendingDevicePatch = null;
@@ -9953,7 +10625,6 @@ function openDrawer(btn) {
       return;
     }
     __connectInFlight = true;
-    __clearOnboardMemoryAutoEnableCheck();
     __clearLandingEnterGate();
     try {
       if (hidConnecting) return;
@@ -10059,7 +10730,6 @@ function openDrawer(btn) {
           controlDevice,
           eventDevice,
           eventMode,
-          transportMode: String(plan?.transportMode || "official").trim().toLowerCase(),
           debugLabel: String(plan?.debugLabel || ""),
           controlSummary,
           eventSummary,
@@ -10110,7 +10780,11 @@ function openDrawer(btn) {
           `firstInput=${Number(item.firstCollectionInputReportCount ?? 0)}`,
           `usage=${formatSummaryHex(item.usage)}`,
           `feature=${item.hasFeatureReports ? "yes" : "no"}(${Number(item.featureReportCount ?? 0)})`,
+          `feature0=${item.hasFeatureReportZero ? "yes" : "no"}`,
+          `feature0Probe=${item.canTryFeatureReportZero ? "yes" : "no"}`,
           `input=${item.hasInputReports ? "yes" : "no"}(${Number(item.inputReportCount ?? 0)})`,
+          `policy=${String(item.connectionClass || "unknown")}`,
+          `fallback=${item.allowReportZeroFallback ? "yes" : "no"}`,
         ].join(" ");
       };
 
@@ -10282,8 +10956,6 @@ function openDrawer(btn) {
           console.log("HID Open, Handshaking:", displayName);
 
           __writesEnabled = false;
-          __armOnboardMemoryAutoEnableCheck();
-
           if (widgetDeviceName) widgetDeviceName.textContent = displayName;
           if (widgetDeviceMeta) widgetDeviceMeta.textContent = window.tr("正在读取配置...", "Reading configuration...");
 
@@ -10293,7 +10965,6 @@ function openDrawer(btn) {
               eventDevice,
               reason: "connect",
               initialReadMode: "full",
-              transportMode: resolvedPlan.transportMode,
               readTimeoutMs: bootstrapReadTimeoutMs,
               readRetry: bootstrapReadRetry,
               // Whether connect flow allows protocol layer to use old-cache fallback.
@@ -10335,16 +11006,25 @@ function openDrawer(btn) {
             updatePollingCycleUI(rate, false);
           }
 
+          let enterCfg = cfg;
+          const onboardPromptCfg = await __maybeConfirmEnableOnboardMemoryBeforeEnter(cfg, handshakeSeq);
+          if (onboardPromptCfg && onboardPromptCfg !== cfg) {
+            enterCfg = onboardPromptCfg;
+            handshakeCfg = onboardPromptCfg;
+            applyConfigToUi(onboardPromptCfg, {
+              trustBatteryFromCfg,
+            });
+          }
           if (document.body.classList.contains("landing-active")) {
-            __prepareLandingEnterGate({ deviceName: displayName, cfg });
+            __prepareLandingEnterGate({ deviceName: displayName, cfg: enterCfg });
             await enterAppWithLiquidTransition(__landingClickOrigin);
           }
 
           __writesEnabled = true;
 
           if (typeof applyKeymapFromCfg === "function") {
-            const cachedCfg = getCachedDeviceConfig();
-            if (cachedCfg) applyKeymapFromCfg(cachedCfg);
+            const keymapCfg = enterCfg !== cfg ? enterCfg : getCachedDeviceConfig();
+            if (keymapCfg) applyKeymapFromCfg(keymapCfg);
           }
           return displayName;
         } finally {
@@ -10403,7 +11083,6 @@ function openDrawer(btn) {
         if (!document.body.classList.contains("landing-active")) {
           __applyDeviceVariantOnce({ deviceName: displayName, cfg: handshakeCfg, keymapOnly: true });
         }
-        __tryAutoEnableOnboardMemoryByConfig(handshakeCfg);
       }
 
 
@@ -10429,7 +11108,6 @@ function openDrawer(btn) {
       // UI entry and protocol handshake are unified in performHandshake; avoid duplicate orchestration here.
 
     } catch (err) {
-      __clearOnboardMemoryAutoEnableCheck();
       __clearLandingEnterGate();
       __activeHandshakeSeq = 0;
       hidConnecting = false;
@@ -10478,7 +11156,6 @@ function openDrawer(btn) {
     if (!hidApi || !hidApi.device) return;
     try {
 
-      __clearOnboardMemoryAutoEnableCheck();
       __clearLandingEnterGate();
       __activeHandshakeSeq = 0;
       __connectPending = null;
@@ -10510,6 +11187,8 @@ function openDrawer(btn) {
     if (!confirm(window.tr("确定要断开当前设备连接", "Are you sure you want to disconnect the current device?"))) return;
     await disconnectHid();
   });
+
+  window.addEventListener("keydown", __handleOnboardMemoryEmergencyHotkey, true);
 
 
   updateDeviceStatus(false);
