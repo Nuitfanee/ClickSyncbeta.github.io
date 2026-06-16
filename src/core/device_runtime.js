@@ -63,8 +63,16 @@
   const RAZER_SUPPORTED_PIDS = new Set([0x00b3, 0x00b6, 0x00b7, 0x00c0, 0x00c1, 0x00c2, 0x00c3, 0x00c4, 0x00c5, 0x00e5, 0x00e6]);
   const RAZER_DEFAULT_CONTROL_USAGE_PAGE = 0x0c;
   const RAZER_WEBHID_REPORT_ID = 0x00;
-  const RAZER_STRICT_OFFICIAL_PIDS = new Set([0x00e5, 0x00e6]);
-  const RAZER_IMPLICIT_REPORT_ZERO_PIDS = new Set([0x00b3, 0x00c5]);
+  const RAZER_CONNECTION_CLASS = Object.freeze({
+    OFFICIAL_STRICT: "official-strict",
+    OFFICIAL_COMPATIBLE: "official-compatible",
+  });
+  const RAZER_CONTROL_PATH = Object.freeze({
+    OFFICIAL: "official",
+    REPORT_ZERO_FALLBACK: "report-zero-fallback",
+    IMPLICIT_REPORT_ZERO: "implicit-report-zero",
+    PROBE_REPORT_ZERO: "probe-report-zero",
+  });
   const CRDRAKO_VENDOR_ID = 0x373e;
   const CRDRAKO_SUPPORTED_PIDS = new Set([0x006a, 0x006b]);
 
@@ -75,30 +83,42 @@
     );
   }
 
+  function _normalizeRazerConnectionPolicy(policy) {
+    if (!policy || typeof policy !== "object") return null;
+    const connectionClass = String(policy.connectionClass || "").trim().toLowerCase();
+    const isStrict = connectionClass === RAZER_CONNECTION_CLASS.OFFICIAL_STRICT;
+    const allowReportZeroFallback = !isStrict && !!policy.allowReportZeroFallback;
+    return {
+      connectionClass: isStrict
+        ? RAZER_CONNECTION_CLASS.OFFICIAL_STRICT
+        : RAZER_CONNECTION_CLASS.OFFICIAL_COMPATIBLE,
+      allowReportZeroFallback,
+      allowProbeFallback: allowReportZeroFallback && !!policy.allowProbeFallback,
+      implicitReportZero: allowReportZeroFallback && !!policy.implicitReportZero,
+    };
+  }
+
   function _getRazerConnectionPolicy(productId) {
     const pid = Number(productId);
-    const getter = window.ProtocolApi?.RAZER_HID?.getConnectionPolicy;
-    if (typeof getter === "function") {
-      try {
-        const policy = getter(pid);
-        if (policy && typeof policy === "object") {
-          return {
-            connectionClass: String(policy.connectionClass || "official-compatible"),
-            allowReportZeroFallback: !!policy.allowReportZeroFallback,
-            implicitReportZero: !!policy.implicitReportZero,
-          };
-        }
-      } catch (_) {
-        // fall through to runtime-safe defaults
-      }
-    }
     if (!RAZER_SUPPORTED_PIDS.has(pid)) return null;
-    const strictOfficial = RAZER_STRICT_OFFICIAL_PIDS.has(pid);
-    return {
-      connectionClass: strictOfficial ? "official-strict" : "official-compatible",
-      allowReportZeroFallback: !strictOfficial,
-      implicitReportZero: RAZER_IMPLICIT_REPORT_ZERO_PIDS.has(pid),
-    };
+
+    const policyGetter = window.ProtocolApi?.RAZER_HID?.getConnectionPolicy;
+    if (typeof policyGetter === "function") {
+      try {
+        const policy = _normalizeRazerConnectionPolicy(policyGetter(pid));
+        if (policy) return policy;
+      } catch (_) {}
+    }
+
+    const metaGetter = window.ProtocolApi?.RAZER_HID?.getTransportMeta;
+    if (typeof metaGetter === "function") {
+      try {
+        const policy = _normalizeRazerConnectionPolicy(metaGetter(pid));
+        if (policy) return policy;
+      } catch (_) {}
+    }
+
+    return null;
   }
 
   function _isCrdrakoSupportedVidPid(d) {
@@ -171,6 +191,7 @@
           : RAZER_DEFAULT_CONTROL_USAGE_PAGE,
         connectionClass: meta?.connectionClass ? String(meta.connectionClass) : "",
         allowReportZeroFallback: !!meta?.allowReportZeroFallback,
+        allowProbeFallback: !!meta?.allowProbeFallback,
         implicitReportZero: !!meta?.implicitReportZero,
       };
     } catch (_) {
@@ -207,11 +228,28 @@
     );
   }
 
-  function _isRazerOfficialControlFallbackCandidate(summary) {
+  function _isRazerReportZeroFallbackCandidate(summary) {
     return !!(
       summary
       && summary.allowReportZeroFallback
-      && summary.canTryFeatureReportZero
+      && summary.hasFeatureReportZero
+    );
+  }
+
+  function _isRazerImplicitReportZeroCandidate(summary) {
+    return !!(
+      summary
+      && summary.allowReportZeroFallback
+      && summary.implicitFeatureReportZero
+    );
+  }
+
+  function _isRazerProbeReportZeroCandidate(summary) {
+    return !!(
+      summary
+      && summary.allowReportZeroFallback
+      && summary.allowProbeFallback
+      && summary.canProbeFeatureReportZero
     );
   }
 
@@ -229,42 +267,12 @@
     }));
     const preferred = (
       handles.find((item) => _isRazerOfficialControlCandidate(item.summary))
-      || handles.find((item) => _isRazerOfficialControlFallbackCandidate(item.summary))
+      || handles.find((item) => _isRazerReportZeroFallbackCandidate(item.summary))
+      || handles.find((item) => _isRazerImplicitReportZeroCandidate(item.summary))
+      || handles.find((item) => _isRazerProbeReportZeroCandidate(item.summary))
       || handles.find((item) => _isRazerOfficialControlShape(item.summary))
     );
     return preferred?.device || null;
-  }
-
-  function _pickRazerOfficialControlHandle(handles, primaryDevice = null) {
-    const primaryHandle = primaryDevice
-      ? handles.find((item) => item.device === primaryDevice) || null
-      : null;
-    if (primaryHandle && _isRazerOfficialControlCandidate(primaryHandle.summary)) {
-      return primaryHandle;
-    }
-    const strictHandle = handles.find((item) => _isRazerOfficialControlCandidate(item.summary));
-    if (strictHandle) return strictHandle;
-
-    if (
-      primaryHandle
-      && _isRazerOfficialControlFallbackCandidate(primaryHandle.summary)
-      && primaryHandle.summary.hasFeatureReportZero
-    ) {
-      return primaryHandle;
-    }
-    const advertisedReportZeroHandle = handles.find((item) => (
-      _isRazerOfficialControlFallbackCandidate(item.summary)
-      && item.summary.hasFeatureReportZero
-    ));
-    if (advertisedReportZeroHandle) return advertisedReportZeroHandle;
-
-    if (primaryHandle && _isRazerOfficialControlFallbackCandidate(primaryHandle.summary)) {
-      return primaryHandle;
-    }
-    return (
-      handles.find((item) => _isRazerOfficialControlFallbackCandidate(item.summary))
-      || null
-    );
   }
 
   function _pickRazerOfficialEventHandle(handles, controlHandle) {
@@ -312,9 +320,22 @@
     const connectionPolicy = _getRazerConnectionPolicy(d?.productId) || {
       connectionClass: transportMeta?.connectionClass || "official-compatible",
       allowReportZeroFallback: !!transportMeta?.allowReportZeroFallback,
+      allowProbeFallback: !!transportMeta?.allowProbeFallback,
       implicitReportZero: !!transportMeta?.implicitReportZero,
     };
-    const implicitFeatureReportZero = !!connectionPolicy?.implicitReportZero;
+    const normalizedPolicy = _normalizeRazerConnectionPolicy(connectionPolicy) || {
+      connectionClass: RAZER_CONNECTION_CLASS.OFFICIAL_COMPATIBLE,
+      allowReportZeroFallback: false,
+      allowProbeFallback: false,
+      implicitReportZero: false,
+    };
+    const implicitFeatureReportZero = !!normalizedPolicy.implicitReportZero;
+    const canProbeFeatureReportZero = !!(
+      normalizedPolicy.allowProbeFallback
+      && featureReportCount > 0
+      && !hasFeatureReportZero
+      && !implicitFeatureReportZero
+    );
     return {
       vendorId: Number(d?.vendorId ?? 0),
       productId: Number(d?.productId ?? 0),
@@ -331,9 +352,11 @@
       hasInputReports: inputReportCount > 0,
       hasFeatureReportZero,
       implicitFeatureReportZero,
-      canTryFeatureReportZero: featureReportCount > 0 || implicitFeatureReportZero,
-      connectionClass: connectionPolicy?.connectionClass || "official-compatible",
-      allowReportZeroFallback: !!connectionPolicy?.allowReportZeroFallback,
+      canProbeFeatureReportZero,
+      canTryFeatureReportZero: hasFeatureReportZero || implicitFeatureReportZero || canProbeFeatureReportZero,
+      connectionClass: normalizedPolicy.connectionClass,
+      allowReportZeroFallback: !!normalizedPolicy.allowReportZeroFallback,
+      allowProbeFallback: !!normalizedPolicy.allowProbeFallback,
       controlUsagePage,
       webhidReportId: transportMeta?.webhidReportId ?? RAZER_WEBHID_REPORT_ID,
       officialControlCandidate,
@@ -364,7 +387,7 @@
   }
 
   function _buildRazerDebugLabel(controlSummary, eventSummary, eventMode) {
-    const controlLabel = `${_formatRazerHandleRef(controlSummary)} ctrl[c=${controlSummary.collectionCount},up=${_formatRazerUsagePage(controlSummary.usagePage)},rid=${Number(controlSummary.webhidReportId ?? 0)},ff=${Number(controlSummary.firstCollectionFeatureReportCount ?? 0)},fi=${Number(controlSummary.firstCollectionInputReportCount ?? 0)},f=${controlSummary.hasFeatureReports ? "y" : "n"},f0=${controlSummary.hasFeatureReportZero ? "y" : "n"},f0p=${controlSummary.canTryFeatureReportZero ? "y" : "n"},i=${controlSummary.hasInputReports ? "y" : "n"}]`;
+    const controlLabel = `${_formatRazerHandleRef(controlSummary)} ctrl[c=${controlSummary.collectionCount},up=${_formatRazerUsagePage(controlSummary.usagePage)},rid=${Number(controlSummary.webhidReportId ?? 0)},ff=${Number(controlSummary.firstCollectionFeatureReportCount ?? 0)},fi=${Number(controlSummary.firstCollectionInputReportCount ?? 0)},f=${controlSummary.hasFeatureReports ? "y" : "n"},f0=${controlSummary.hasFeatureReportZero ? "y" : "n"},f0i=${controlSummary.implicitFeatureReportZero ? "y" : "n"},f0p=${controlSummary.canProbeFeatureReportZero ? "y" : "n"},i=${controlSummary.hasInputReports ? "y" : "n"}]`;
     if (eventMode === "shared") return `${controlLabel} evt=shared`;
     return `${controlLabel} evt=${_formatRazerHandleRef(eventSummary)}[c=${eventSummary.collectionCount},up=${_formatRazerUsagePage(eventSummary.usagePage)},fi=${Number(eventSummary.firstCollectionInputReportCount ?? 0)},i=${eventSummary.hasInputReports ? "y" : "n"}]`;
   }
@@ -439,6 +462,9 @@
     return Array.from(RAZER_SUPPORTED_PIDS, (productId) => ({
       vendorId: RAZER_VENDOR_ID,
       productId,
+      ...(_getRazerConnectionPolicy(productId)?.connectionClass === RAZER_CONNECTION_CLASS.OFFICIAL_STRICT
+        ? { usagePage: RAZER_DEFAULT_CONTROL_USAGE_PAGE }
+        : {}),
     }));
   }
 
@@ -541,7 +567,7 @@
       type: "razer",
       label: "Razer",
       match: _isRazerDevice,
-      filters: _buildRazerRequestFilters(),
+      filters: _buildRazerRequestFilters,
     },
   ];
 
@@ -805,42 +831,104 @@
       : [];
     const handles = sameModelHandles.length ? sameModelHandles : allHandles;
     const handleSummaries = handles.map((item) => item.summary);
+    const preferredControlHandle = primaryDevice
+      ? handles.find((item) => item.device === primaryDevice) || null
+      : null;
+    const orderedHandles = preferredControlHandle
+      ? [preferredControlHandle, ...handles.filter((item) => item !== preferredControlHandle)]
+      : handles.slice(0);
 
-    const buildPlan = (control, event) => {
+    const planKey = (controlDevice, eventDevice, controlPath) => [
+      controlDevice?.vendorId || 0,
+      controlDevice?.productId || 0,
+      eventDevice?.vendorId || 0,
+      eventDevice?.productId || 0,
+      controlPath || "",
+    ].join(":");
+
+    const pushPlan = (plans, seen, control, event, controlPath, requiresControlProbe = false) => {
+      if (!control || !event) return;
+      const key = planKey(control.device, event.device, controlPath);
+      if (seen.has(key)) return;
+      seen.add(key);
       const controlSummary = control.summary;
       const eventSummary = event.summary;
       const eventMode = event.device === control.device ? "shared" : "separate";
-      const debugLabel = _buildRazerDebugLabel(controlSummary, eventSummary, eventMode);
-      return {
-        connectionPlans: [{
-          controlDevice: control.device,
-          eventDevice: event.device,
-          eventMode,
-          debugLabel,
-          controlSummary,
-          eventSummary,
-        }],
-        connectionPlanError: null,
-      };
+      const debugLabel = `${_buildRazerDebugLabel(controlSummary, eventSummary, eventMode)} path=${controlPath}${requiresControlProbe ? " probe=1" : ""}`;
+      plans.push({
+        controlDevice: control.device,
+        eventDevice: event.device,
+        eventMode,
+        debugLabel,
+        controlSummary,
+        eventSummary,
+        controlPath,
+        requiresControlProbe,
+      });
     };
 
-    const preferredControlHandle = _pickRazerOfficialControlHandle(handles, primaryDevice);
-    if (!preferredControlHandle) {
-      return {
-        connectionPlans: [],
-        connectionPlanError: _buildRazerConnectionPlanError("MISSING_RAZER_CONTROL_INTERFACE", handleSummaries),
-      };
+    const connectionPlans = [];
+    const seenPlans = new Set();
+    const planStages = [
+      {
+        controlPath: RAZER_CONTROL_PATH.OFFICIAL,
+        requiresControlProbe: false,
+        accepts: _isRazerOfficialControlCandidate,
+      },
+      {
+        controlPath: RAZER_CONTROL_PATH.REPORT_ZERO_FALLBACK,
+        requiresControlProbe: false,
+        accepts: _isRazerReportZeroFallbackCandidate,
+      },
+      {
+        controlPath: RAZER_CONTROL_PATH.IMPLICIT_REPORT_ZERO,
+        requiresControlProbe: false,
+        accepts: _isRazerImplicitReportZeroCandidate,
+      },
+      {
+        controlPath: RAZER_CONTROL_PATH.PROBE_REPORT_ZERO,
+        requiresControlProbe: true,
+        accepts: _isRazerProbeReportZeroCandidate,
+      },
+    ];
+    for (const stage of planStages) {
+      for (const control of orderedHandles) {
+        const eventHandle = _pickRazerOfficialEventHandle(handles, control);
+        if (!eventHandle || !stage.accepts(control.summary)) continue;
+        pushPlan(
+          connectionPlans,
+          seenPlans,
+          control,
+          eventHandle,
+          stage.controlPath,
+          stage.requiresControlProbe
+        );
+      }
     }
 
-    const eventHandle = _pickRazerOfficialEventHandle(handles, preferredControlHandle);
-    if (!eventHandle) {
+    if (!connectionPlans.length) {
+      const anyOfficialControl = handles.some((item) => _isRazerOfficialControlCandidate(item.summary));
+      const anyFallbackControl = handles.some((item) => (
+        _isRazerReportZeroFallbackCandidate(item.summary)
+        || _isRazerImplicitReportZeroCandidate(item.summary)
+        || _isRazerProbeReportZeroCandidate(item.summary)
+      ));
+      if (!anyOfficialControl && !anyFallbackControl) {
+        return {
+          connectionPlans: [],
+          connectionPlanError: _buildRazerConnectionPlanError("MISSING_RAZER_CONTROL_INTERFACE", handleSummaries),
+        };
+      }
       return {
         connectionPlans: [],
         connectionPlanError: _buildRazerConnectionPlanError("MISSING_RAZER_EVENT_INTERFACE", handleSummaries),
       };
     }
 
-    return buildPlan(preferredControlHandle, eventHandle);
+    return {
+      connectionPlans,
+      connectionPlanError: null,
+    };
   }
 
 
@@ -858,7 +946,9 @@
   async function _requestAuthorizedDeviceSelection({ preferDifferentFrom = null } = {}) {
     if (!navigator.hid) throw new Error("当前浏览器不支持 WebHID");
 
-    const allFilters = DEVICE_REGISTRY.flatMap((entry) => entry.filters);
+    const allFilters = DEVICE_REGISTRY.flatMap((entry) => (
+      typeof entry.filters === "function" ? entry.filters() : entry.filters
+    ));
     const uniqueFilters = [];
     const seen = new Set();
     for (const f of allFilters) {

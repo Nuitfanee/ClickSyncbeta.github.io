@@ -277,6 +277,7 @@
       controlUsagePage: RAZER_WEBHID_CONTROL_USAGE_PAGE,
       connectionClass: CONNECTION_CLASS.OFFICIAL_COMPATIBLE,
       allowReportZeroFallback: true,
+      allowProbeFallback: true,
       implicitReportZero: false,
       pollingMode: "classic",
       battery: true,
@@ -293,18 +294,18 @@
   /*
    * Razer PID capability matrix (single source of truth)
    *
-   * pid     role      rid evt polling  conn                 f0fb  f0impl  name
-   * 0x00b3  sdongle   00  00  v2       official-compatible Y     Y       HyperPolling Wireless Dongle
-   * 0x00b6  body      00  00  classic  official-compatible Y     -       DeathAdder V3 Pro (Wired)
-   * 0x00b7  dongle    00  00  classic  official-compatible Y     -       DeathAdder V3 Pro (Wireless)
-   * 0x00c0  body      00  05  classic  official-compatible Y     -       Viper V3 Pro (Wired)
-   * 0x00c1  dongle    00  05  v2       official-compatible Y     -       Viper V3 Pro (Wireless)
-   * 0x00c2  body      00  00  classic  official-compatible Y     -       DeathAdder V3 Pro (Wired Alt)
-   * 0x00c3  dongle    00  00  classic  official-compatible Y     -       DeathAdder V3 Pro (Wireless Alt)
-   * 0x00c4  body      00  00  classic  official-compatible Y     -       DeathAdder V3 HyperSpeed (Wired)
-   * 0x00c5  dongle    00  00  classic  official-compatible Y     Y       DeathAdder V3 HyperSpeed (Wireless)
-   * 0x00e5  body      00  05  classic  official-strict     -     -       Viper V4 Pro (Wired)
-   * 0x00e6  dongle    00  05  v2       official-strict     -     -       Viper V4 Pro (Wireless)
+   * pid     role      rid evt polling  conn                 f0fb  probe  f0impl  name
+   * 0x00b3  sdongle   00  00  v2       official-compatible Y     Y      Y       HyperPolling Wireless Dongle
+   * 0x00b6  body      00  00  classic  official-compatible Y     Y      -       DeathAdder V3 Pro (Wired)
+   * 0x00b7  dongle    00  00  classic  official-compatible Y     Y      -       DeathAdder V3 Pro (Wireless)
+   * 0x00c0  body      00  05  classic  official-compatible Y     Y      -       Viper V3 Pro (Wired)
+   * 0x00c1  dongle    00  05  v2       official-compatible Y     Y      -       Viper V3 Pro (Wireless)
+   * 0x00c2  body      00  00  classic  official-compatible Y     Y      -       DeathAdder V3 Pro (Wired Alt)
+   * 0x00c3  dongle    00  00  classic  official-compatible Y     Y      -       DeathAdder V3 Pro (Wireless Alt)
+   * 0x00c4  body      00  00  classic  official-compatible Y     Y      -       DeathAdder V3 HyperSpeed (Wired)
+   * 0x00c5  dongle    00  00  classic  official-compatible Y     Y      Y       DeathAdder V3 HyperSpeed (Wireless)
+   * 0x00e5  body      00  05  classic  official-strict     -     -      -       Viper V4 Pro (Wired)
+   * 0x00e6  dongle    00  05  v2       official-strict     -     -      -       Viper V4 Pro (Wireless)
    */
   const PID_CAPABILITY_MATRIX = Object.freeze([
     buildPidMatrixRow(PID.HYPERPOLLING_WIRELESS_DONGLE, "Razer HyperPolling Wireless Dongle", {
@@ -383,6 +384,7 @@
       eventReportId: 0x05,
       connectionClass: CONNECTION_CLASS.OFFICIAL_STRICT,
       allowReportZeroFallback: false,
+      allowProbeFallback: false,
       dynamicSensitivity: true,
       sensorAngle: true,
     }),
@@ -394,6 +396,7 @@
       eventReportId: 0x05,
       connectionClass: CONNECTION_CLASS.OFFICIAL_STRICT,
       allowReportZeroFallback: false,
+      allowProbeFallback: false,
       pollingMode: "v2",
       dynamicSensitivity: true,
       sensorAngle: true,
@@ -421,6 +424,7 @@
       controlUsagePage: row.controlUsagePage,
       connectionClass: row.connectionClass,
       allowReportZeroFallback: !!row.allowReportZeroFallback,
+      allowProbeFallback: !!row.allowProbeFallback,
       implicitReportZero: !!row.implicitReportZero,
     })]))
   );
@@ -524,6 +528,7 @@
       pid: row.pid,
       connectionClass: row.connectionClass,
       allowReportZeroFallback: !!row.allowReportZeroFallback,
+      allowProbeFallback: !!row.allowProbeFallback,
       implicitReportZero: !!row.implicitReportZero,
     };
   }
@@ -634,135 +639,143 @@
       return toDataViewU8(raw);
     }
 
-    async sendAndWait(packet, opts = {}) {
-      return this.queue.enqueue(async () => {
-        this._requireOpenDevice();
+    async _sendAndWaitCore(packet, opts = {}) {
+      this._requireOpenDevice();
 
-        const requestBytes = this._prepareRequestBytes(packet);
-        const request = ProtocolCodec.parseRazerReport(requestBytes);
+      const requestBytes = this._prepareRequestBytes(packet);
+      const request = ProtocolCodec.parseRazerReport(requestBytes);
 
-        const reportId = Number(this._reportId ?? RAZER_WEBHID_REPORT_ID);
+      const reportId = Number(this._reportId ?? RAZER_WEBHID_REPORT_ID);
 
-        const retryBudget = RAZER_BUSY_RETRY;
-        const waitMs = Number.isFinite(Number(opts.waitMs))
-          ? Number(opts.waitMs)
-          : 0;
-        const responseValidator = typeof opts.responseValidator === "function"
-          ? opts.responseValidator
-          : null;
+      const retryBudget = RAZER_BUSY_RETRY;
+      const waitMs = Number.isFinite(Number(opts.waitMs))
+        ? Number(opts.waitMs)
+        : 0;
+      const responseValidator = typeof opts.responseValidator === "function"
+        ? opts.responseValidator
+        : null;
 
-        let lastErr = null;
+      let lastErr = null;
 
-        for (let attempt = 0; attempt <= retryBudget; attempt++) {
-          try {
-            await this._sendFeature(reportId, requestBytes);
-            if (waitMs > 0) await sleep(waitMs);
+      for (let attempt = 0; attempt <= retryBudget; attempt++) {
+        try {
+          await this._sendFeature(reportId, requestBytes);
+          if (waitMs > 0) await sleep(waitMs);
 
-            const raw = await this._recvFeature(reportId);
-            const responseBytes = ProtocolCodec.fitReport(raw);
-            const response = ProtocolCodec.parseRazerReport(responseBytes);
+          const raw = await this._recvFeature(reportId);
+          const responseBytes = ProtocolCodec.fitReport(raw);
+          const response = ProtocolCodec.parseRazerReport(responseBytes);
 
-            if (!ProtocolCodec.matchResponse(request, response)) {
-              throw new ProtocolError("Response does not match request", "RESPONSE_MISMATCH", {
-                reportId,
-                expected: {
-                  transactionId: request.transactionId,
-                  remainingPackets: request.remainingPackets,
-                  commandClass: request.commandClass,
-                  commandId: request.commandId,
-                },
-                got: {
-                  transactionId: response.transactionId,
-                  remainingPackets: response.remainingPackets,
-                  commandClass: response.commandClass,
-                  commandId: response.commandId,
-                },
-              });
-            }
-
-            if (responseValidator && !responseValidator(request, response)) {
-              throw new ProtocolError("Response validator rejected packet", "RESPONSE_VALIDATION_FAILED", {
-                reportId,
+          if (!ProtocolCodec.matchResponse(request, response)) {
+            throw new ProtocolError("Response does not match request", "RESPONSE_MISMATCH", {
+              reportId,
+              expected: {
+                transactionId: request.transactionId,
+                remainingPackets: request.remainingPackets,
+                commandClass: request.commandClass,
+                commandId: request.commandId,
+              },
+              got: {
+                transactionId: response.transactionId,
+                remainingPackets: response.remainingPackets,
                 commandClass: response.commandClass,
                 commandId: response.commandId,
+              },
+            });
+          }
+
+          if (responseValidator && !responseValidator(request, response)) {
+            throw new ProtocolError("Response validator rejected packet", "RESPONSE_VALIDATION_FAILED", {
+              reportId,
+              commandClass: response.commandClass,
+              commandId: response.commandId,
+            });
+          }
+
+          switch (response.status) {
+            case REPORT_STATUS.SUCCESS:
+            case REPORT_STATUS.SUCCESSFUL:
+              return response;
+            case REPORT_STATUS.NEW_COMMAND:
+              throw new ProtocolError("Razer device returned NEW_COMMAND", "DEVICE_COMMAND_NEW_COMMAND", {
+                reportId,
+                response,
               });
-            }
+            case REPORT_STATUS.BUSY:
+              throw new ProtocolError("Razer device returned BUSY", "DEVICE_BUSY", {
+                reportId,
+                response,
+                attempts: attempt + 1,
+              });
+            case REPORT_STATUS.FAIL:
+            case REPORT_STATUS.FAILURE:
+              throw new ProtocolError("Razer command failed", "DEVICE_COMMAND_FAILURE", {
+                reportId,
+                response,
+              });
+            case REPORT_STATUS.TIMEOUT:
+              throw new ProtocolError("Razer command timeout status", "DEVICE_COMMAND_TIMEOUT", {
+                reportId,
+                response,
+              });
+            case REPORT_STATUS.NOT_SUPPORTED:
+              throw new ProtocolError("Razer command not supported", "DEVICE_COMMAND_NOT_SUPPORTED", {
+                reportId,
+                response,
+              });
+            default:
+              throw new ProtocolError("Unknown Razer command status", "DEVICE_COMMAND_UNKNOWN_STATUS", {
+                reportId,
+                response,
+              });
+          }
+        } catch (err) {
+          lastErr = err;
+          const code = String(err?.code || "");
 
-            switch (response.status) {
-              case REPORT_STATUS.SUCCESS:
-              case REPORT_STATUS.SUCCESSFUL:
-                return response;
-              case REPORT_STATUS.NEW_COMMAND:
-                throw new ProtocolError("Razer device returned NEW_COMMAND", "DEVICE_COMMAND_NEW_COMMAND", {
-                  reportId,
-                  response,
-                });
-              case REPORT_STATUS.BUSY:
-                throw new ProtocolError("Razer device returned BUSY", "DEVICE_BUSY", {
-                  reportId,
-                  response,
-                  attempts: attempt + 1,
-                });
-              case REPORT_STATUS.FAIL:
-              case REPORT_STATUS.FAILURE:
-                throw new ProtocolError("Razer command failed", "DEVICE_COMMAND_FAILURE", {
-                  reportId,
-                  response,
-                });
-              case REPORT_STATUS.TIMEOUT:
-                throw new ProtocolError("Razer command timeout status", "DEVICE_COMMAND_TIMEOUT", {
-                  reportId,
-                  response,
-                });
-              case REPORT_STATUS.NOT_SUPPORTED:
-                throw new ProtocolError("Razer command not supported", "DEVICE_COMMAND_NOT_SUPPORTED", {
-                  reportId,
-                  response,
-                });
-              default:
-                throw new ProtocolError("Unknown Razer command status", "DEVICE_COMMAND_UNKNOWN_STATUS", {
-                  reportId,
-                  response,
-                });
-            }
-          } catch (err) {
-            lastErr = err;
-            const name = String(err?.name || "");
-            const msg = String(err?.message || "").toLowerCase();
-            const code = String(err?.code || "");
-
-            if (
-              code === "DEVICE_COMMAND_NOT_SUPPORTED"
-              || code === "DEVICE_COMMAND_UNKNOWN_STATUS"
-            ) {
-              throw err;
-            }
-
-            const isPermissionPathErr = isPermissionPathError(err);
-
-            if (isPermissionPathErr) {
-              const permissionRetryBudget = Math.min(retryBudget, RAZER_NOT_ALLOWED_SAME_ID_RETRY);
-              if (attempt >= permissionRetryBudget) throw err;
-            }
-
-            if (
-              code === "IO_READ_TIMEOUT"
-              || code === "DEVICE_COMMAND_NEW_COMMAND"
-              || code === "DEVICE_BUSY"
-              || code === "DEVICE_COMMAND_FAILURE"
-              || code === "DEVICE_COMMAND_TIMEOUT"
-              || code === "RESPONSE_MISMATCH"
-              || code === "RESPONSE_VALIDATION_FAILED"
-              || isPermissionPathErr
-            ) {
-              if (RAZER_RETRY_BACKOFF_MS > 0) await sleep(RAZER_RETRY_BACKOFF_MS);
-              if (attempt < retryBudget) continue;
-            }
+          if (
+            code === "DEVICE_COMMAND_NOT_SUPPORTED"
+            || code === "DEVICE_COMMAND_UNKNOWN_STATUS"
+          ) {
             throw err;
           }
-        }
 
-        throw lastErr || new ProtocolError("sendAndWait failed", "IO_UNKNOWN");
+          const isPermissionPathErr = isPermissionPathError(err);
+
+          if (isPermissionPathErr) {
+            const permissionRetryBudget = Math.min(retryBudget, RAZER_NOT_ALLOWED_SAME_ID_RETRY);
+            if (attempt >= permissionRetryBudget) throw err;
+          }
+
+          if (
+            code === "IO_READ_TIMEOUT"
+            || code === "DEVICE_COMMAND_NEW_COMMAND"
+            || code === "DEVICE_BUSY"
+            || code === "DEVICE_COMMAND_FAILURE"
+            || code === "DEVICE_COMMAND_TIMEOUT"
+            || code === "RESPONSE_MISMATCH"
+            || code === "RESPONSE_VALIDATION_FAILED"
+            || isPermissionPathErr
+          ) {
+            if (RAZER_RETRY_BACKOFF_MS > 0) await sleep(RAZER_RETRY_BACKOFF_MS);
+            if (attempt < retryBudget) continue;
+          }
+          throw err;
+        }
+      }
+
+      throw lastErr || new ProtocolError("sendAndWait failed", "IO_UNKNOWN");
+    }
+
+    async sendAndWait(packet, opts = {}) {
+      return this.queue.enqueue(() => this._sendAndWaitCore(packet, opts));
+    }
+
+    async probeControlChannel(packet = null) {
+      return this.queue.enqueue(async () => {
+        this._requireOpenDevice();
+        const probePacket = packet || ProtocolCodec.commands.getFirmwareVersion(0x01);
+        return this._sendAndWaitCore(probePacket);
       });
     }
 
@@ -2960,6 +2973,16 @@
       }
     }
 
+    async probeControlChannel() {
+      await this._ensureOpen();
+      const tx = txForField(this._pid(), "snapshot");
+      try {
+        return await this._driver.probeControlChannel(ProtocolCodec.commands.getFirmwareVersion(tx));
+      } catch (e) {
+        throw new ProtocolError("Control channel probe failed", "CONTROL_PROBE_FAILED", { cause: e });
+      }
+    }
+
     // Unified session bootstrap entry: open -> optional initial read -> timeout/retry -> cache fallback,
     // while guaranteeing at least one _emitConfig() call.
     async bootstrapSession(opts = {}) {
@@ -2981,6 +3004,7 @@
         sendTimeoutMs = null,
         useCacheFallback = true,
         initialReadMode = "full",
+        probeControlChannel = false,
       } = options;
 
       if (hasDevice || hasEventDevice) {
@@ -3025,6 +3049,10 @@
           openErr = e;
           if (i < maxOpenAttempts - 1 && openDelayMs > 0) await sleep(openDelayMs);
         }
+      }
+
+      if (!openErr && probeControlChannel) {
+        await this.probeControlChannel();
       }
 
       let initialReadErr = null;
@@ -3720,10 +3748,15 @@
   ProtocolApi.RAZER_HID = {
     vendorId: RAZER_VENDOR_ID,
     productIds: SUPPORTED_PIDS.slice(0),
-    defaultFilters: SUPPORTED_PIDS.map((productId) => ({
-      vendorId: RAZER_VENDOR_ID,
-      productId,
-    })),
+    defaultFilters: SUPPORTED_PIDS.map((productId) => {
+      const policy = getConnectionPolicyForPid(productId);
+      return Object.assign({
+        vendorId: RAZER_VENDOR_ID,
+        productId,
+      }, policy?.connectionClass === CONNECTION_CLASS.OFFICIAL_STRICT
+        ? { usagePage: RAZER_WEBHID_CONTROL_USAGE_PAGE }
+        : {});
+    }),
     isSupportedPid(productId) {
       return SUPPORTED_PID_SET.has(Number(productId));
     },

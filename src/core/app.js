@@ -10730,6 +10730,8 @@ function openDrawer(btn) {
           controlDevice,
           eventDevice,
           eventMode,
+          controlPath: String(plan?.controlPath || "official").trim().toLowerCase(),
+          requiresControlProbe: !!plan?.requiresControlProbe,
           debugLabel: String(plan?.debugLabel || ""),
           controlSummary,
           eventSummary,
@@ -10781,7 +10783,8 @@ function openDrawer(btn) {
           `usage=${formatSummaryHex(item.usage)}`,
           `feature=${item.hasFeatureReports ? "yes" : "no"}(${Number(item.featureReportCount ?? 0)})`,
           `feature0=${item.hasFeatureReportZero ? "yes" : "no"}`,
-          `feature0Probe=${item.canTryFeatureReportZero ? "yes" : "no"}`,
+          `feature0Implicit=${item.implicitFeatureReportZero ? "yes" : "no"}`,
+          `feature0Probe=${item.canProbeFeatureReportZero ? "yes" : "no"}`,
           `input=${item.hasInputReports ? "yes" : "no"}(${Number(item.inputReportCount ?? 0)})`,
           `policy=${String(item.connectionClass || "unknown")}`,
           `fallback=${item.allowReportZeroFallback ? "yes" : "no"}`,
@@ -10794,7 +10797,8 @@ function openDrawer(btn) {
         const eventText = normalized.eventMode === "shared"
           ? "event=shared"
           : `event=separate { ${describeHandleSummary(normalized.eventSummary)} }`;
-        return `control={ ${describeHandleSummary(normalized.controlSummary)} } ${eventText}`;
+        const probeText = normalized.requiresControlProbe ? " probe=required" : "";
+        return `path=${normalized.controlPath}${probeText} control={ ${describeHandleSummary(normalized.controlSummary)} } ${eventText}`;
       };
 
       const toConnectionPlanError = (planError) => {
@@ -10965,6 +10969,7 @@ function openDrawer(btn) {
               eventDevice,
               reason: "connect",
               initialReadMode: "full",
+              probeControlChannel: !!resolvedPlan.requiresControlProbe,
               readTimeoutMs: bootstrapReadTimeoutMs,
               readRetry: bootstrapReadRetry,
               // Whether connect flow allows protocol layer to use old-cache fallback.
